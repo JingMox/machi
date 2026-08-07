@@ -50,8 +50,6 @@
 //! This crate is typically used through the main `machi` crate, which re-exports
 //! the [`tool`] macro in its prelude.
 
-extern crate proc_macro;
-
 mod tool;
 
 use proc_macro::TokenStream;
