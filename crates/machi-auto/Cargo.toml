@@ -4,16 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description.workspace = true
-readme = "README.md"
-keywords = ["ai", "agent", "llm", "cli"]
-categories = ["command-line-utilities"]
+description = "Demo CLI for the Machi kernel"
+publish = false
 
 [[bin]]
-name = "machi"
+name = "machi-auto"
 path = "src/main.rs"
 
 [dependencies]
+machi = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

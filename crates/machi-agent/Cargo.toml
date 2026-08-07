@@ -1,0 +1,18 @@
+[package]
+name = "machi-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent definition, builder, and instance for Machi"
+keywords = ["ai", "agent"]
+categories = ["data-structures"]
+
+[dependencies]
+machi-tools = { workspace = true }
+machi-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

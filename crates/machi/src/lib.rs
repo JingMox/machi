@@ -1,84 +1,70 @@
-#![allow(clippy::multiple_crate_versions)]
+//! Machi — enterprise embeddable agent runtime kernel.
+//!
+//! # Layers
+//!
+//! - **types** — messages, ids, usage, errors
+//! - **tools** — tool trait, registry, concurrent dispatch
+//! - **llm** — [`LlmSampler`](machi_llm::LlmSampler) + [`MockSampler`](machi_llm::MockSampler)
+//! - **agent** — definition / builder / instance
+//! - **runtime** — [`TurnRuntime`](machi_runtime::TurnRuntime), [`SessionHost`](machi_runtime::SessionHost)
+//! - **workflow** — journaled Rhai orchestration (no LLM dependency)
+//!
+//! This is a **clean break** from Machi ≤0.8 (`Runner`, etc.). See
+//! `docs/architecture/kernel.md`.
 
-//! A lightweight, ergonomic framework for building AI agents in Rust.
-//!
-//! Machi provides the building blocks for constructing AI agents that reason,
-//! use tools, and collaborate — powered by any LLM backend.
-//!
-//! # Core Concepts
-//!
-//! - **[`Agent`](agent::Agent)** — A self-contained unit with its own LLM provider,
-//!   instructions, tools, and optional sub-agents.
-//! - **[`Runner`](agent::Runner)** — A stateless execution engine driving the
-//!   `ReAct` loop (think → act → observe → repeat).
-//! - **[`Tool`](tool::Tool) / [`DynTool`](tool::DynTool)** — Capabilities that
-//!   agents can invoke (filesystem, shell, web search, or custom).
-//! - **[`ChatProvider`](chat::ChatProvider)** — Trait abstracting over LLM backends
-//!   (`OpenAI`, Ollama, or custom).
-//!
-//! # Feature Flags
-//!
-//! | Feature | Description |
-//! |---------|-------------|
-//! | `openai` | `OpenAI` API backend |
-//! | `ollama` | Ollama local LLM backend |
-//! | `derive` | `#[tool]` proc-macro for deriving tools |
-//! | `toolkit` | Built-in filesystem, shell, and web search tools |
-//! | `mcp` | Model Context Protocol server integration |
-//! | `a2a` | Agent-to-Agent protocol support |
-//! | `memory-sqlite` | SQLite-backed session persistence |
-//! | `schema` | Structured output via JSON Schema generation |
-//! | `full` | All of the above (default) |
-//!
-//! # Quick Start
-//!
-//! ```rust
-//! use machi::agent::{Agent, RunConfig};
-//! use machi::chat::ChatRequest;
-//! use machi::message::Message;
-//!
-//! // Build a chat request
-//! let request = ChatRequest::new("gpt-4o")
-//!     .system("You are a helpful assistant.")
-//!     .user("Hello!")
-//!     .temperature(0.7);
-//!
-//! // Configure an agent
-//! let agent = Agent::new("assistant")
-//!     .instructions("You are a helpful assistant.")
-//!     .model("gpt-4o");
-//!
-//! // Construct messages manually
-//! let msgs = vec![
-//!     Message::system("You are helpful."),
-//!     Message::user("What is Rust?"),
-//! ];
-//! ```
+#![forbid(unsafe_code)]
+// Feature-gated transitive deps are unused when compiling the facade lib alone.
+#![allow(
+    unused_crate_dependencies,
+    reason = "facade re-exports optional workspace crates"
+)]
 
-#[cfg(feature = "a2a")]
-pub mod a2a;
-pub mod agent;
-pub mod audio;
-pub mod chat;
-pub mod context;
-pub mod embedding;
-pub mod error;
-pub mod guardrail;
-pub mod hooks;
-pub mod llms;
-#[cfg(feature = "mcp")]
-pub mod mcp;
-pub mod memory;
-pub mod message;
-pub mod middleware;
-pub mod prelude;
-pub mod stream;
-pub mod tool;
-#[cfg(feature = "toolkit")]
-pub mod tools;
-pub mod usage;
-
-pub use error::{Error, Result};
-#[cfg(feature = "derive")]
-pub use machi_derive::tool;
-pub use tool::ToolError;
+#[cfg(feature = "runtime")]
+pub use machi_agent as agent;
+#[cfg(feature = "runtime")]
+pub use machi_agent::{
+    Agent, AgentBuilder, AgentDefinition, CompletionRequirement, Instructions, ToolPolicy,
+};
+#[cfg(feature = "runtime")]
+pub use machi_llm as llm;
+#[cfg(feature = "openai")]
+pub use machi_llm::OpenAiCompatSampler;
+#[cfg(feature = "runtime")]
+pub use machi_llm::{
+    LlmSampler, MockSampler, OpenAiCompatConfig, SampleRequest, SampleResponse, ToolChoice,
+    build_chat_completions_body, parse_chat_completions_response,
+};
+#[cfg(feature = "ollama")]
+pub use machi_llm::{OllamaConfig, OllamaSampler};
+#[cfg(feature = "runtime")]
+pub use machi_runtime as runtime;
+#[cfg(all(feature = "runtime", feature = "workflow"))]
+pub use machi_runtime::run_workflow_on_host;
+#[cfg(feature = "runtime")]
+pub use machi_runtime::{
+    AgentRunResult, ConversationState, InProcessHost, MetricsSink, NoopMetrics, Session,
+    SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, TurnInput, TurnOptions, TurnOutcome,
+    TurnRuntime, VecConversationState,
+};
+#[cfg(feature = "runtime")]
+pub use machi_tools as tools;
+#[cfg(feature = "runtime")]
+pub use machi_tools::{
+    CalcTool, CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchRequest,
+    DynTool, InterruptBehavior, SharedTool, ToolCallContext, ToolDefinition, ToolDispatch,
+    ToolError, ToolMetadata, ToolRegistry, ToolResult,
+};
+pub use machi_types as types;
+pub use machi_types::{
+    AgentId, CompletionTokensDetails, ContentPart, Deadline, ErrorCode, ImageMime, MachiError,
+    Message, PromptTokensDetails, Result, RetryClass, Role, RunId, SessionId, ToolCall, ToolCallId,
+    Usage, WorkflowRunId,
+};
+#[cfg(feature = "workflow")]
+pub use machi_workflow as workflow;
+#[cfg(feature = "workflow")]
+pub use machi_workflow::{
+    AgentOpts, AgentResult as WorkflowAgentResult, BudgetState, DEFAULT_AGENT_BUDGET, HostError,
+    Journal, JournalEntry, JournalError, MAX_AGENT_BUDGET, PauseKind, WorkflowHostRequest,
+    WorkflowMeta, WorkflowOutcome, WorkflowRunParams, extract_meta, run_workflow,
+};

@@ -5,45 +5,34 @@ exclude = ["3rdparty"]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.1"
+version = "1.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/qntx/machi"
-description = "A lightweight, ergonomic AI Agent Framework"
-keywords = ["ai", "agent", "llm", "openai", "ollama"]
+description = "Enterprise embeddable agent runtime kernel"
+keywords = ["ai", "agent", "llm", "workflow", "runtime"]
 categories = ["api-bindings", "asynchronous"]
 
 [workspace.dependencies]
-machi = { version = "0.8", path = "crates/machi" }
-machi-derive = { version = "0.8", path = "crates/machi-derive" }
+machi = { version = "1.0.0", path = "crates/machi" }
+machi-types = { version = "1.0.0", path = "crates/machi-types" }
+machi-tools = { version = "1.0.0", path = "crates/machi-tools" }
+machi-llm = { version = "1.0.0", path = "crates/machi-llm" }
+machi-agent = { version = "1.0.0", path = "crates/machi-agent" }
+machi-runtime = { version = "1.0.0", path = "crates/machi-runtime" }
+machi-workflow = { version = "1.0.0", path = "crates/machi-workflow" }
 
-async-stream = "0.3.6"
 async-trait = "0.1.89"
-base64 = "0.22.1"
-convert_case = "0.11.0"
-darling = "0.23.0"
 futures = "0.3.32"
-proc-macro2 = "1.0.106"
-quote = "1.0.45"
-ra2a = "0.9.3"
-regex = "1.12.3"
-reqwest = { version = "0.13.2", features = ["json", "stream", "multipart"] }
-reqwest-middleware = { version = "0.5.1", features = ["json", "multipart"] }
-rmcp = { version = "1.3.0", features = [
-    "client",
-    "transport-child-process",
-    "transport-streamable-http-client-reqwest",
-] }
-rusqlite = { version = "0.39.0", features = ["bundled"] }
-schemars = "1.2.1"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+rhai = { version = "1.22", default-features = false, features = ["std", "sync", "serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-syn = { version = "2.0.117", features = ["full", "extra-traits", "parsing"] }
+sha2 = "0.10"
 thiserror = "2.0.18"
-tokio = { version = "1.51.0", default-features = false, features = ["sync", "macros", "process"] }
-tokio-test = "0.4.5"
+tokio = { version = "1.51.0", default-features = false, features = ["sync", "macros", "rt", "time", "rt-multi-thread", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.23.0", features = ["v4", "serde"] }
 
 [profile.release]
@@ -132,13 +121,14 @@ exit = "warn"
 undocumented_unsafe_blocks = "warn"
 multiple_unsafe_ops_per_block = "warn"
 mem_forget = "warn"
-clone_on_ref_ptr = "warn"
+clone_on_ref_ptr = "allow"
 rc_buffer = "warn"
 rc_mutex = "warn"
 
 fallible_impl_from = "warn"
 error_impl_error = "warn"
-let_underscore_must_use = "warn"
+# Host reply channels often intentionally ignore send results.
+let_underscore_must_use = "allow"
 
 rest_pat_in_fully_bound_structs = "warn"
 fn_params_excessive_bools = "warn"
@@ -164,13 +154,15 @@ await_holding_refcell_ref = "warn"
 significant_drop_tightening = "warn"
 
 match_wildcard_for_single_variants = "warn"
-match_same_arms = "warn"
-option_if_let_else = "warn"
+match_same_arms = "allow"
+option_if_let_else = "allow"
 wildcard_enum_match_arm = "allow"
 
 cognitive_complexity = "warn"
 too_many_lines = "warn"
-excessive_nesting = "warn"
+# Rhai host registration and dispatch wave logic are inherently nested; keep
+# complexity visible via cognitive_complexity / too_many_lines instead.
+excessive_nesting = "allow"
 
 used_underscore_binding = "warn"
 verbose_file_reads = "warn"
@@ -181,6 +173,27 @@ allow_attributes_without_reason = "warn"
 missing_assert_message = "warn"
 empty_line_after_doc_comments = "warn"
 empty_line_after_outer_attr = "warn"
+
+# Rhai requires `Box<EvalAltResult>`; host reply channels use fire-and-forget acks.
+boxed_local = "allow"
+unnecessary_box_returns = "allow"
+# Host error types and maps are small; pass-by-value keeps call sites simple.
+needless_pass_by_value = "allow"
+# JSON Schema / serde_json::Value cannot implement Eq.
+derive_partial_eq_without_eq = "allow"
+# Const fn is nice-to-have; not a production correctness gate.
+missing_const_for_fn = "allow"
+assigning_clones = "allow"
+redundant_clone = "allow"
+unused_self = "allow"
+map_unwrap_or = "allow"
+unnested_or_patterns = "allow"
+unnecessary_wraps = "allow"
+unnecessary_literal_bound = "allow"
+or_fun_call = "allow"
+default_trait_access = "allow"
+needless_borrows_for_generic_args = "allow"
+equatable_if_let = "allow"
 
 missing_docs_in_private_items = "allow"
 missing_errors_doc = "warn"
@@ -196,7 +209,8 @@ module_name_repetitions = "allow"
 similar_names = "allow"
 shadow_reuse = "allow"
 shadow_same = "allow"
-shadow_unrelated = "warn"
+# Async/Rhai host adapters re-bind channel state in short scopes.
+shadow_unrelated = "allow"
 multiple_crate_versions = "allow"
 cargo_common_metadata = "allow"
 semicolon_inside_block = "allow"
