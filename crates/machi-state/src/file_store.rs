@@ -9,6 +9,17 @@ use tokio::fs;
 use crate::handle::ChatStateSnapshot;
 use crate::persistence::ChatPersistence;
 
+/// Default relative directory under a project root for session checkpoints.
+pub const DEFAULT_SESSIONS_DIR: &str = ".machi/sessions";
+
+/// Canonical path: `{root}/.machi/sessions/{session_id}.json`.
+#[must_use]
+pub fn default_session_path(root: impl AsRef<Path>, session_id: &str) -> PathBuf {
+    root.as_ref()
+        .join(DEFAULT_SESSIONS_DIR)
+        .join(format!("{session_id}.json"))
+}
+
 /// Persist snapshots as a single JSON file (atomic write via temp + rename).
 #[derive(Debug, Clone)]
 pub struct FilePersistence {
@@ -22,10 +33,22 @@ impl FilePersistence {
         Self { path: path.into() }
     }
 
+    /// Default layout under `{root}/.machi/sessions/{session_id}.json`.
+    #[must_use]
+    pub fn for_session(root: impl AsRef<Path>, session_id: impl AsRef<str>) -> Self {
+        Self::new(default_session_path(root, session_id.as_ref()))
+    }
+
     /// Path accessor.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Whether the checkpoint file currently exists.
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
     }
 }
 
@@ -102,5 +125,22 @@ mod tests {
             Some("hi")
         );
         let _ = UsageLedger::default();
+    }
+
+    #[tokio::test]
+    async fn for_session_layout() {
+        let dir = tempdir().expect("tmp");
+        let store = FilePersistence::for_session(dir.path(), "sess_demo");
+        assert!(
+            store
+                .path()
+                .ends_with(Path::new(".machi/sessions/sess_demo.json"))
+        );
+        assert!(!store.exists());
+        store
+            .save(&messages_only(vec![Message::user("x")]))
+            .await
+            .expect("save");
+        assert!(store.exists());
     }
 }

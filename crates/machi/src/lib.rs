@@ -37,10 +37,13 @@
 pub use machi_agent as agent;
 #[cfg(feature = "runtime")]
 pub use machi_agent::{
-    Agent, AgentBuilder, AgentDefinition, CompletionRequirement, Instructions, PROJECT_AGENTS_DIR,
-    ToolPolicy, by_name, by_name_in_dir, discover_in_dir, discover_project, load_file,
-    parse_definition_markdown,
+    Agent, AgentBuilder, AgentDefinition, AgentRegistry, CompletionRequirement, IdentityAssembler,
+    Instructions, PROJECT_AGENTS_DIR, PROJECT_AGENTS_MD, ProjectPromptAssembler, PromptAssembler,
+    ToolPolicy, agents_md_path, by_name, by_name_in_dir, discover_in_dir, discover_project,
+    load_file, parse_definition_markdown,
 };
+#[cfg(feature = "compaction")]
+pub use machi_compaction as compaction;
 #[cfg(feature = "runtime")]
 pub use machi_llm as llm;
 #[cfg(feature = "openai")]
@@ -53,40 +56,41 @@ pub use machi_llm::{
 };
 #[cfg(feature = "ollama")]
 pub use machi_llm::{OllamaConfig, OllamaSampler};
+#[cfg(feature = "obs")]
+pub use machi_obs as obs;
+#[cfg(feature = "obs")]
+pub use machi_obs::{
+    PrometheusRecorder, REDACTED, RecordingMetrics, emit_catalogue_smoke, looks_like_secret_key,
+    metric_catalogue_snapshot, redact_key_value, redact_map, required_metric_names,
+    required_span_names,
+};
+pub use machi_protocol as protocol;
+pub use machi_protocol::{
+    ContentBlock, ImageBlock, SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL,
+    SPAN_TOOL_BATCH, SPAN_TURN, SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId, span_catalogue_snapshot,
+};
 #[cfg(feature = "runtime")]
 pub use machi_runtime as runtime;
+#[cfg(feature = "runtime")]
+pub use machi_runtime::{
+    AgentRunResult, CompactionOutcome, CompactionStrategy, CompletionToolGate, ConversationState,
+    DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, GateChain, GateDecision,
+    InProcessHost, MaxMessages, MetricsSink, NoopMetrics, Session, SessionHost, SharedMetrics,
+    SpawnAgentTool, SpawnOpts, StopGate, TokenThreshold, TurnInput, TurnOptions, TurnOutcome,
+    TurnRuntime, VecConversationState, evaluate_stop_gates,
+};
 #[cfg(all(feature = "runtime", feature = "workflow"))]
 pub use machi_runtime::{
     WorkflowSideEffects, run_workflow_configured, run_workflow_on_host,
     run_workflow_on_host_with_metrics,
 };
-#[cfg(feature = "runtime")]
-pub use machi_runtime::{
-    AgentRunResult, CompactionOutcome, CompactionStrategy, CompletionToolGate, ConversationState,
-    GateChain, GateDecision, InProcessHost, MaxMessages, MetricsSink, NoopMetrics, Session,
-    SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, StopGate, TurnInput, TurnOptions,
-    TurnOutcome, TurnRuntime, VecConversationState, evaluate_stop_gates,
-};
-#[cfg(feature = "runtime")]
-pub use machi_tools as tools;
-#[cfg(feature = "runtime")]
-pub use machi_tools::{
-    AlwaysDeny, ApprovalDecision, ApprovalGate, ApprovalPolicy, AutoApprove, CalcTool,
-    CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchOutcome,
-    DispatchRequest, DynTool, InterruptBehavior, SharedTool, ToolCallContext, ToolDefinition,
-    ToolDispatch, ToolError, ToolMetadata, ToolProgress, ToolRegistry, ToolResult, ToolStream,
-    ToolStreamItem, drain_terminal, terminal_only, with_progress,
-};
-pub use machi_protocol as protocol;
-pub use machi_protocol::{
-    ContentBlock, ImageBlock, SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL,
-    SPAN_TOOL_BATCH, SPAN_TURN, SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId,
-};
-pub use machi_types as types;
-pub use machi_types::{
-    AgentId, CompletionTokensDetails, ContentPart, Deadline, ErrorCode, ImageMime, MachiError,
-    Message, PromptTokensDetails, Result, RetryClass, Role, RunId, SessionId, ToolCall, ToolCallId,
-    Usage, WorkflowRunId,
+#[cfg(feature = "state")]
+pub use machi_state as state;
+#[cfg(feature = "state")]
+pub use machi_state::{
+    ChatPersistence, ChatStateHandle, ChatStateSnapshot, DEFAULT_SESSIONS_DIR, FilePersistence,
+    InMemoryMemory, MemoryItem, MemoryPersistence, MemoryPort, NullMemory, NullPersistence,
+    UsageLedger, check_tool_pairing, default_session_path, messages_only,
 };
 #[cfg(feature = "toolkit")]
 pub use machi_toolkit as toolkit;
@@ -95,29 +99,30 @@ pub use machi_toolkit::{
     GlobTool, GrepTool, ReadFileTool, ShellTool, WriteFileTool, default_toolkit, glob_match,
     resolve_jailed,
 };
-#[cfg(feature = "state")]
-pub use machi_state as state;
-#[cfg(feature = "state")]
-pub use machi_state::{
-    ChatPersistence, ChatStateHandle, ChatStateSnapshot, FilePersistence, MemoryPersistence,
-    NullPersistence, UsageLedger, check_tool_pairing, messages_only,
+#[cfg(feature = "runtime")]
+pub use machi_tools as tools;
+#[cfg(feature = "runtime")]
+pub use machi_tools::{
+    AlwaysDeny, ApprovalDecision, ApprovalGate, ApprovalPolicy, AutoApprove, CalcTool,
+    CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchOutcome,
+    DispatchRequest, DynTool, EXTRA_SPAWN_DEPTH, InterruptBehavior, SharedTool, ToolCallContext,
+    ToolDefinition, ToolDispatch, ToolError, ToolMetadata, ToolProgress, ToolRegistry, ToolResult,
+    ToolStream, ToolStreamItem, drain_terminal, drain_with_progress, terminal_only, with_progress,
 };
-#[cfg(feature = "compaction")]
-pub use machi_compaction as compaction;
-#[cfg(feature = "obs")]
-pub use machi_obs as obs;
-#[cfg(feature = "obs")]
-pub use machi_obs::{
-    PrometheusRecorder, REDACTED, RecordingMetrics, looks_like_secret_key, redact_key_value,
-    redact_map, required_span_names,
+pub use machi_types as types;
+pub use machi_types::{
+    AgentId, CompletionTokensDetails, ContentPart, Deadline, ErrorCode, ImageMime, MachiError,
+    Message, PromptTokensDetails, Result, RetryClass, Role, RunId, SessionId, ToolCall, ToolCallId,
+    Usage, WorkflowRunId,
 };
 #[cfg(feature = "workflow")]
 pub use machi_workflow as workflow;
 #[cfg(feature = "workflow")]
 pub use machi_workflow::{
-    AgentOpts, AgentResult as WorkflowAgentResult, BudgetState, DEFAULT_AGENT_BUDGET, HostError,
-    Journal, JournalEntry, JournalError, MAX_AGENT_BUDGET, PauseKind, ValidationError,
-    ValidationReport, WorkflowHostRequest, WorkflowMeta, WorkflowOutcome, WorkflowRunParams,
-    default_probe_args, extract_meta, run_workflow, validate_script,
-    validate_script_with_agent_budget,
+    AgentOpts, AgentResult as WorkflowAgentResult, BudgetState, DEFAULT_AGENT_BUDGET,
+    FileWorkflowRunStore, HostError, Journal, JournalEntry, JournalError, MAX_AGENT_BUDGET,
+    MemoryWorkflowRunStore, PauseKind, StoreError, ValidationError, ValidationReport,
+    WorkflowHostRequest, WorkflowMeta, WorkflowOutcome, WorkflowRunParams, WorkflowRunRecord,
+    WorkflowRunStatus, WorkflowRunStore, default_probe_args, extract_meta, request_hash,
+    run_workflow, validate_script, validate_script_with_agent_budget,
 };

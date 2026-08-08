@@ -10,6 +10,10 @@
 **Not** API-compatible with Machi ≤0.8. **Not** a full Grok product clone
 (no TUI/shell); targets the agent/runtime/workflow kernel surface.
 
+**Development north star:** [`ROADMAP.md`](./ROADMAP.md) — dual multi-agent
+modes (dynamic spawn + journaled workflow), phase gates P0–P7, Ultimate DoD.
+Do not expand peripherals ahead of the current phase exit criteria.
+
 ### Architecture (shipped crates)
 
 ```
@@ -29,8 +33,9 @@ approval/gates/compaction → metrics → spawn and/or journaled workflow
 MCP. Do not treat README feature lists as production-complete systems.
 
 **State model:** `VecConversationState` = turn buffer; `ChatStateHandle` =
-session source of truth; `FilePersistence`/`MemoryPersistence` via
-`Session::run_turn_on_handle_checkpointed`.
+session source of truth; checkpoints via `FilePersistence::for_session` /
+`Session::open_checkpointed_turn`. Workflow metadata: `WorkflowRunStore`.
+Optional summaries: `MemoryPort` (not a vector DB).
 
 ### Single-agent turn
 
@@ -53,13 +58,22 @@ assert_eq!(out.output_text, "ok");
 
 ### Multi-agent mode A — dynamic delegation
 
-1. **Programmatic:** `InProcessHost::spawn_agents` (concurrent, budget/cancel).
+1. **Programmatic:** `InProcessHost::spawn_agents` (concurrent, budget/cancel,
+   depth, concurrency caps).
 2. **Model-driven:** parent `ReAct` loop calls the `spawn_agent` tool
-   ([`SpawnAgentTool`]), which nests children through the same host.
+   ([`SpawnAgentTool`]), which nests children through the same host
+   (depth via `EXTRA_SPAWN_DEPTH`).
+
+`InProcessHost` defaults: `max_spawn_depth=16`, `max_concurrent_children=64`.
+`SpawnOpts` is isomorphic with workflow `AgentOpts` (including `agent_type`,
+`output_schema`). Resolve types via `AgentRegistry`; optional
+`ProjectPromptAssembler` (project `AGENTS.md`). `fork_messages` seeds a child
+conversation; bare `fork_context` without messages / `resume_from` fail-closed.
 
 ```bash
 cargo run -p machi --example delegate_multi
 cargo run -p machi --example delegate_via_tool
+cargo run -p machi --example session_checkpoint --features state
 ```
 
 ### Multi-agent mode B — journaled workflow

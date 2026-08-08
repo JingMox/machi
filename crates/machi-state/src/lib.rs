@@ -8,11 +8,13 @@
 pub mod file_store;
 pub mod handle;
 pub mod ledger;
+pub mod memory;
 pub mod persistence;
 pub mod strict;
 
-pub use file_store::FilePersistence;
+pub use file_store::{DEFAULT_SESSIONS_DIR, FilePersistence, default_session_path};
 pub use handle::{ChatStateHandle, ChatStateSnapshot};
 pub use ledger::UsageLedger;
+pub use memory::{InMemoryMemory, MemoryItem, MemoryPort, NullMemory};
 pub use persistence::{ChatPersistence, MemoryPersistence, NullPersistence, messages_only};
 pub use strict::{StrictAppendError, check_append, check_tool_pairing};

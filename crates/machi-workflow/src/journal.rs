@@ -208,6 +208,18 @@ impl Journal {
         self.entries.push(entry);
         Ok(())
     }
+
+    /// Optional durable path.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Entries as a slice (for inspection / tests).
+    #[must_use]
+    pub fn entries(&self) -> &[JournalEntry] {
+        &self.entries
+    }
 }
 
 /// Hash a host request for divergence detection.
@@ -248,6 +260,8 @@ fn append_line(path: &Path, entry: &JournalEntry) -> Result<(), JournalError> {
     })?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
+    // Durable enough for crash-resume tests: flush OS buffers for this file.
+    file.sync_data()?;
     Ok(())
 }
 
@@ -289,5 +303,39 @@ mod tests {
         j.record(0, "spawn_agent", hash, json!(42)).expect("rec");
         let loaded = Journal::load(path).expect("load");
         assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn durable_load_after_drop_simulates_cross_process() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("cross.jsonl");
+        {
+            let mut j = Journal::new(Some(path.clone()));
+            let h0 = request_hash("spawn_agent", &json!({"prompt": "a"}));
+            let h1 = request_hash("spawn_agent", &json!({"prompt": "b"}));
+            j.record(0, "spawn_agent", h0, json!({"output": "A"}))
+                .expect("r0");
+            j.record(1, "spawn_agent", h1, json!({"output": "B"}))
+                .expect("r1");
+            assert_eq!(j.path(), Some(path.as_path()));
+        }
+        // New process-equivalent: load from disk only.
+        let loaded = Journal::load(path).expect("load");
+        assert_eq!(loaded.len(), 2);
+        let h0 = request_hash("spawn_agent", &json!({"prompt": "a"}));
+        let replayed = loaded
+            .replay(0, "spawn_agent", &h0)
+            .expect("replay")
+            .expect("hit");
+        assert_eq!(replayed.get("output"), Some(&json!("A")));
+    }
+
+    #[test]
+    fn sequence_gap_on_record() {
+        let mut j = Journal::new(None);
+        let err = j
+            .record(1, "spawn_agent", "h".into(), json!(null))
+            .expect_err("seq");
+        assert!(matches!(err, JournalError::Sequence { .. }));
     }
 }

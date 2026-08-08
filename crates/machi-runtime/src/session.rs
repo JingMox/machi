@@ -119,15 +119,8 @@ impl Session {
         input: TurnInput,
         options: TurnOptions,
     ) -> Result<TurnOutcome, MachiError> {
-        self.run_turn_on_handle_with_metrics(
-            agent,
-            sampler,
-            handle,
-            input,
-            options,
-            &NoopMetrics,
-        )
-        .await
+        self.run_turn_on_handle_with_metrics(agent, sampler, handle, input, options, &NoopMetrics)
+            .await
     }
 
     /// [`Self::run_turn_on_handle`] with metrics.
@@ -144,10 +137,8 @@ impl Session {
         options: TurnOptions,
         metrics: &dyn MetricsSink,
     ) -> Result<TurnOutcome, MachiError> {
-        self.run_turn_on_handle_checkpointed(
-            agent, sampler, handle, input, options, metrics, None,
-        )
-        .await
+        self.run_turn_on_handle_checkpointed(agent, sampler, handle, input, options, metrics, None)
+            .await
     }
 
     /// Session turn with optional durable checkpoint after each turn.
@@ -191,6 +182,41 @@ impl Session {
             handle.save_to(store).await?;
         }
         outcome
+    }
+
+    /// Open a handle from `store` (or empty), run one checkpointed turn, return handle + outcome.
+    ///
+    /// Convenience for hosts that own a single file/session path.
+    ///
+    /// # Errors
+    ///
+    /// Load / turn / save failures.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "open+turn packs agent, sampler, store, input, options, metrics"
+    )]
+    pub async fn open_checkpointed_turn(
+        &mut self,
+        agent: &Agent,
+        sampler: &dyn LlmSampler,
+        store: &dyn ChatPersistence,
+        input: TurnInput,
+        options: TurnOptions,
+        metrics: &dyn MetricsSink,
+    ) -> Result<(ChatStateHandle, TurnOutcome), MachiError> {
+        let handle = ChatStateHandle::open_or_new(store).await?;
+        let outcome = self
+            .run_turn_on_handle_checkpointed(
+                agent,
+                sampler,
+                &handle,
+                input,
+                options,
+                metrics,
+                Some(store),
+            )
+            .await?;
+        Ok((handle, outcome))
     }
 }
 
@@ -309,5 +335,49 @@ mod tests {
         let loaded = store.load().await.expect("load").expect("some");
         assert!(!loaded.messages.is_empty());
         handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_checkpointed_turn_round_trip() {
+        use machi_state::MemoryPersistence;
+
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("one");
+        sampler.push_text("two");
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .build()
+            .expect("agent");
+        let store = MemoryPersistence::default();
+        let mut session = Session::new();
+        let (h1, o1) = session
+            .open_checkpointed_turn(
+                &agent,
+                sampler.as_ref(),
+                &store,
+                TurnInput::Text("a".into()),
+                TurnOptions::default(),
+                &NoopMetrics,
+            )
+            .await
+            .expect("t1");
+        assert_eq!(o1.output_text, "one");
+        h1.shutdown().await;
+
+        let (h2, o2) = session
+            .open_checkpointed_turn(
+                &agent,
+                sampler.as_ref(),
+                &store,
+                TurnInput::Text("b".into()),
+                TurnOptions::default(),
+                &NoopMetrics,
+            )
+            .await
+            .expect("t2");
+        assert_eq!(o2.output_text, "two");
+        // History includes both turns after reload.
+        assert!(h2.messages().await.len() >= 4);
+        h2.shutdown().await;
     }
 }

@@ -121,12 +121,14 @@ impl DynTool for WriteFileTool {
                         ))
                     })?;
                 }
-                fs::write(&resolved, content.as_bytes()).await.map_err(|e| {
-                    machi_tools::error::codes::execution(format!(
-                        "write {}: {e}",
-                        resolved.display()
-                    ))
-                })?;
+                fs::write(&resolved, content.as_bytes())
+                    .await
+                    .map_err(|e| {
+                        machi_tools::error::codes::execution(format!(
+                            "write {}: {e}",
+                            resolved.display()
+                        ))
+                    })?;
                 Ok(ToolResult {
                     content: format!("wrote {} bytes to {path}", content.len()),
                     structured: Some(json!({
@@ -155,10 +157,7 @@ mod tests {
             ..ToolCallContext::default()
         };
         let r = tool
-            .call(
-                ctx,
-                json!({"path": "nested/a.txt", "content": "hello"}),
-            )
+            .call(ctx, json!({"path": "nested/a.txt", "content": "hello"}))
             .await
             .expect("write");
         assert!(r.content.contains("wrote"), "{}", r.content);

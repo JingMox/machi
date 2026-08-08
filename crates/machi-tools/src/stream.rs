@@ -64,7 +64,9 @@ impl ToolProgress {
 /// Single-item terminal stream from a completed result.
 #[must_use]
 pub fn terminal_only(result: Result<ToolResult, ToolError>) -> ToolStream {
-    Box::pin(stream::once(async move { ToolStreamItem::Terminal(result) }))
+    Box::pin(stream::once(
+        async move { ToolStreamItem::Terminal(result) },
+    ))
 }
 
 /// Progress items then a terminal future.
@@ -74,10 +76,7 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = Result<ToolResult, ToolError>> + Send + 'static,
 {
-    let items: Vec<ToolStreamItem> = progress
-        .into_iter()
-        .map(ToolStreamItem::Progress)
-        .collect();
+    let items: Vec<ToolStreamItem> = progress.into_iter().map(ToolStreamItem::Progress).collect();
     let prog = stream::iter(items);
     let term = stream::once(async move { ToolStreamItem::Terminal(terminal().await) });
     Box::pin(prog.chain(term))
@@ -88,15 +87,33 @@ where
 /// # Errors
 ///
 /// Returns stream protocol error when the stream ends without a terminal item.
-pub async fn drain_terminal(mut stream: ToolStream) -> Result<ToolResult, ToolError> {
+pub async fn drain_terminal(stream: ToolStream) -> Result<ToolResult, ToolError> {
+    let (_progress, result) = drain_with_progress(stream).await;
+    result
+}
+
+/// Drain a stream, collecting progress items and the terminal result.
+///
+/// # Errors
+///
+/// The terminal `Result` carries tool failures. When the stream ends without a
+/// terminal item, returns protocol error in the terminal slot.
+pub async fn drain_with_progress(
+    mut stream: ToolStream,
+) -> (Vec<ToolProgress>, Result<ToolResult, ToolError>) {
+    let mut progress = Vec::new();
     while let Some(item) = stream.next().await {
-        if let ToolStreamItem::Terminal(result) = item {
-            return result;
+        match item {
+            ToolStreamItem::Progress(p) => progress.push(p),
+            ToolStreamItem::Terminal(result) => return (progress, result),
         }
     }
-    Err(codes::stream_protocol(
-        "tool stream ended without a terminal item",
-    ))
+    (
+        progress,
+        Err(codes::stream_protocol(
+            "tool stream ended without a terminal item",
+        )),
+    )
 }
 
 #[cfg(test)]
@@ -117,5 +134,23 @@ mod tests {
         });
         let r = drain_terminal(s).await.expect("drain");
         assert_eq!(r.content, "done");
+    }
+
+    #[tokio::test]
+    async fn drain_with_progress_captures_chunks() {
+        let s = with_progress(
+            vec![ToolProgress::text("a"), ToolProgress::text("b")],
+            || async { Ok(ToolResult::text("done")) },
+        );
+        let (progress, result) = drain_with_progress(s).await;
+        assert_eq!(progress.len(), 2);
+        assert_eq!(result.expect("ok").content, "done");
+    }
+
+    #[tokio::test]
+    async fn empty_stream_is_protocol_error() {
+        let s: ToolStream = Box::pin(stream::empty());
+        let err = drain_terminal(s).await.expect_err("proto");
+        assert_eq!(err.code(), machi_types::ErrorCode::ToolStreamProtocol);
     }
 }

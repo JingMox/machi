@@ -113,8 +113,15 @@ impl DynTool for GrepTool {
             move || async move {
                 let start = resolve_jailed(&root, &path).map_err(jail_denied)?;
                 let mut matches = Vec::new();
-                search_path(&start, &root, &pattern, max_matches, max_file_bytes, &mut matches)
-                    .await?;
+                search_path(
+                    &start,
+                    &root,
+                    &pattern,
+                    max_matches,
+                    max_file_bytes,
+                    &mut matches,
+                )
+                .await?;
                 let truncated = matches.len() >= max_matches;
                 let content = if matches.is_empty() {
                     "no matches".to_owned()
@@ -178,9 +185,11 @@ async fn search_path(
         let mut rd = fs::read_dir(path).await.map_err(|e| {
             machi_tools::error::codes::execution(format!("read_dir {}: {e}", path.display()))
         })?;
-        while let Some(entry) = rd.next_entry().await.map_err(|e| {
-            machi_tools::error::codes::execution(format!("read_dir next: {e}"))
-        })? {
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| machi_tools::error::codes::execution(format!("read_dir next: {e}")))?
+        {
             let name = entry.file_name();
             if name == ".git" || name == "target" || name == "node_modules" {
                 continue;

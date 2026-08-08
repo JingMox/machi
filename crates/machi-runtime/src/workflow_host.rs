@@ -99,13 +99,7 @@ pub async fn run_workflow_configured(
                     }));
                 }
                 other => {
-                    dispatch_inline(
-                        other,
-                        budget,
-                        &spent_h,
-                        &reserved_h,
-                        effects_svc.as_ref(),
-                    );
+                    dispatch_inline(other, budget, &spent_h, &reserved_h, effects_svc.as_ref());
                 }
             }
         }
@@ -175,13 +169,7 @@ async fn handle_spawn(
             Err(e) => {
                 let r = reserved.load(Ordering::Relaxed);
                 reserved.fetch_sub(r.min(1), Ordering::Relaxed);
-                if e.code() == machi_types::ErrorCode::HostBudget {
-                    Err(HostError::BudgetExceeded)
-                } else if e.code() == machi_types::ErrorCode::HostCancelled {
-                    Err(HostError::Cancelled)
-                } else {
-                    Err(HostError::Failed(e.to_string()))
-                }
+                Err(map_host_spawn_error(e))
             }
         }
     }
@@ -289,6 +277,24 @@ fn reserve(
     Ok(())
 }
 
+/// Map workflow [`AgentOpts`] → host [`SpawnOpts`] without silent field drops.
+///
+/// Fields the default host does not implement (`fork_context`, `resume_from`)
+/// are forwarded; [`crate::host::InProcessHost`] fail-closes with
+/// [`machi_types::ErrorCode::HostUnsupported`].
+fn map_host_spawn_error(e: machi_types::MachiError) -> HostError {
+    use machi_types::ErrorCode;
+    match e.code() {
+        ErrorCode::HostBudget => HostError::BudgetExceeded,
+        ErrorCode::HostCancelled => HostError::Cancelled,
+        ErrorCode::HostUnsupported
+        | ErrorCode::HostDepth
+        | ErrorCode::HostConcurrency
+        | ErrorCode::AgentNotFound => HostError::Unsupported(e.message().to_owned()),
+        _ => HostError::Failed(e.to_string()),
+    }
+}
+
 fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> SpawnOpts {
     let mut spawn = SpawnOpts::new(opts.prompt).with_cancel(cancel);
     if let Some(label) = opts.label {
@@ -299,6 +305,21 @@ fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> SpawnOpts {
     }
     if let Some(mode) = opts.capability_mode.as_deref() {
         spawn.capability_mode = parse_capability(mode);
+    }
+    if let Some(agent_type) = opts.agent_type {
+        spawn = spawn.with_agent_type(agent_type);
+    }
+    if let Some(schema) = opts.output_schema {
+        spawn = spawn.with_output_schema(schema);
+    }
+    if let Some(n) = opts.max_output_tokens {
+        spawn = spawn.with_max_output_tokens(n);
+    }
+    if opts.fork_context {
+        spawn = spawn.with_fork_context(true);
+    }
+    if let Some(id) = opts.resume_from {
+        spawn = spawn.with_resume_from(id);
     }
     spawn
 }

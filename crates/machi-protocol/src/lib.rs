@@ -12,6 +12,6 @@ pub mod tool_id;
 pub use content::{ContentBlock, ImageBlock};
 pub use observability::{
     SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
-    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field,
+    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names, span_catalogue_snapshot,
 };
 pub use tool_id::ToolId;

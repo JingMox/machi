@@ -151,7 +151,9 @@ impl ToolDispatch {
                     set_outcome(&mut outcomes, index, out);
                     index = index.saturating_add(1);
                 }
-                Prepare::Ready(tool) if tool.metadata().concurrency == ConcurrencyMode::Exclusive => {
+                Prepare::Ready(tool)
+                    if tool.metadata().concurrency == ConcurrencyMode::Exclusive =>
+                {
                     let out = self.run_one(tool.as_ref(), ctx.clone(), req).await;
                     set_outcome(&mut outcomes, index, out);
                     index = index.saturating_add(1);
@@ -245,9 +247,7 @@ impl ToolDispatch {
         }
         self.check_approval(tool, meta, &req.call.arguments).await?;
         let fut = async {
-            let stream = tool
-                .execute(ctx.clone(), req.call.arguments.clone())
-                .await;
+            let stream = tool.execute(ctx.clone(), req.call.arguments.clone()).await;
             drain_terminal(stream).await
         };
         let limit = meta
@@ -573,5 +573,137 @@ mod tests {
             .as_ref()
             .expect_err("approval");
         assert_eq!(err.code(), ErrorCode::ToolApprovalDenied);
+    }
+
+    struct SlowTool;
+
+    #[async_trait]
+    impl DynTool for SlowTool {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        fn description(&self) -> &str {
+            "sleeps"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            json!({"type":"object","properties":{}})
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata {
+                timeout: Some(Duration::from_millis(20)),
+                ..ToolMetadata::read_only()
+            }
+        }
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _arguments: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(ToolResult::text("late"))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_timeout_matrix() {
+        let reg = ToolRegistry::from_tools(vec![Arc::new(SlowTool)]);
+        let outs = ToolDispatch::default()
+            .execute_batch(&reg, ToolCallContext::default(), vec![call("slow", "c1")])
+            .await;
+        let err = outs
+            .first()
+            .expect("one")
+            .result
+            .as_ref()
+            .expect_err("timeout");
+        assert_eq!(err.code(), ErrorCode::ToolTimeout);
+    }
+
+    struct CancelAwareTool;
+
+    #[async_trait]
+    impl DynTool for CancelAwareTool {
+        fn name(&self) -> &str {
+            "cancel_me"
+        }
+        fn description(&self) -> &str {
+            "waits for cancel"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            json!({"type":"object","properties":{}})
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::read_only()
+        }
+        async fn call(
+            &self,
+            ctx: ToolCallContext,
+            _arguments: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            ctx.cancel.cancelled().await;
+            Err(codes::cancelled())
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_cancel_matrix() {
+        use tokio_util::sync::CancellationToken;
+
+        let reg = ToolRegistry::from_tools(vec![Arc::new(CancelAwareTool)]);
+        let cancel = CancellationToken::new();
+        let ctx = ToolCallContext::default().with_cancel(cancel.clone());
+        let dispatch = ToolDispatch::default();
+        let handle = tokio::spawn(async move {
+            dispatch
+                .execute_batch(&reg, ctx, vec![call("cancel_me", "c1")])
+                .await
+        });
+        // Allow the tool to start waiting.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel.cancel();
+        let outs = handle.await.expect("join");
+        let err = outs
+            .first()
+            .expect("one")
+            .result
+            .as_ref()
+            .expect_err("cancelled");
+        assert_eq!(err.code(), ErrorCode::ToolCancelled);
+    }
+
+    #[tokio::test]
+    async fn batch_cancel_fills_remaining() {
+        use tokio_util::sync::CancellationToken;
+
+        let reg = ToolRegistry::from_tools(vec![
+            Arc::new(CountingTool {
+                name: "r1".into(),
+                meta: ToolMetadata::read_only(),
+                active: Arc::new(AtomicUsize::new(0)),
+                max_active: Arc::new(AtomicUsize::new(0)),
+                barrier: None,
+            }),
+            Arc::new(CountingTool {
+                name: "r2".into(),
+                meta: ToolMetadata::read_only(),
+                active: Arc::new(AtomicUsize::new(0)),
+                max_active: Arc::new(AtomicUsize::new(0)),
+                barrier: None,
+            }),
+        ]);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let outs = ToolDispatch::default()
+            .execute_batch(
+                &reg,
+                ToolCallContext::default().with_cancel(cancel),
+                vec![call("r1", "c1"), call("r2", "c2")],
+            )
+            .await;
+        assert_eq!(outs.len(), 2);
+        for o in &outs {
+            let err = o.result.as_ref().expect_err("cancelled");
+            assert_eq!(err.code(), ErrorCode::ToolCancelled);
+        }
     }
 }

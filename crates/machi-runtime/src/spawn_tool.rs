@@ -16,6 +16,10 @@ use crate::host::{SessionHost, SpawnOpts};
 /// This is the **dynamic delegation** entry point for a parent agent’s `ReAct`
 /// loop: the model calls `spawn_agent`, the tool blocks until the child finishes,
 /// and the child’s output is returned as the tool result.
+///
+/// Nesting depth is derived from [`ToolCallContext::spawn_depth`]: a top-level
+/// session turn spawns at depth `0`; a host-spawned agent at depth `d` spawns at
+/// `d + 1`.
 pub struct SpawnAgentTool {
     host: Arc<dyn SessionHost>,
     default_capability: CapabilityMode,
@@ -55,8 +59,8 @@ impl DynTool for SpawnAgentTool {
 
     fn description(&self) -> &'static str {
         "Spawn a nested agent to handle a subtask with its own context. \
-         Provide a clear prompt; optionally set label and capability_mode \
-         (full | read_only | plan)."
+         Provide a clear prompt; optionally set label, capability_mode \
+         (full | read_only | plan), agent_type, max_steps, and output_schema."
     }
 
     fn parameters(&self) -> Value {
@@ -80,6 +84,19 @@ impl DynTool for SpawnAgentTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Optional max ReAct steps for the child turn"
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Optional registered agent definition name"
+                },
+                "output_schema": {
+                    "type": "object",
+                    "description": "Optional JSON schema for structured child output"
+                },
+                "max_output_tokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional max output tokens for the child sampler"
                 }
             },
             "required": ["prompt"],
@@ -120,6 +137,12 @@ impl DynTool for SpawnAgentTool {
             .get("max_steps")
             .and_then(Value::as_u64)
             .and_then(|n| usize::try_from(n).ok());
+        let agent_type = arguments
+            .get("agent_type")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let output_schema = arguments.get("output_schema").cloned();
+        let max_output_tokens = arguments.get("max_output_tokens").and_then(Value::as_u64);
 
         // Child cancel is linked to the parent turn token when present.
         let child_cancel = if ctx.cancel.is_cancelled() {
@@ -128,14 +151,27 @@ impl DynTool for SpawnAgentTool {
             ctx.cancel.child_token()
         };
 
+        // Top-level session → depth 0; host-spawned agent at d → child at d+1.
+        let depth = ctx.spawn_depth().map_or(0, |d| d.saturating_add(1));
+
         let mut opts = SpawnOpts::new(prompt)
             .with_capability(capability_mode)
-            .with_cancel(child_cancel);
+            .with_cancel(child_cancel)
+            .with_depth(depth);
         if let Some(label) = label {
             opts = opts.with_label(label);
         }
         if let Some(max_steps) = max_steps {
             opts = opts.with_max_steps(max_steps);
+        }
+        if let Some(agent_type) = agent_type {
+            opts = opts.with_agent_type(agent_type);
+        }
+        if let Some(schema) = output_schema {
+            opts = opts.with_output_schema(schema);
+        }
+        if let Some(n) = max_output_tokens {
+            opts = opts.with_max_output_tokens(n);
         }
 
         let run = self.host.spawn_agent(opts).await.map_err(|e| {
@@ -204,5 +240,27 @@ mod tests {
             Some("child-done")
         );
         assert_eq!(structured.get("label").and_then(|v| v.as_str()), Some("w1"));
+    }
+
+    #[tokio::test]
+    async fn spawn_tool_depth_fail_closed() {
+        let sampler = Arc::new(MockSampler::new());
+        let host: Arc<dyn SessionHost> =
+            Arc::new(InProcessHost::new(sampler, Vec::new()).with_max_spawn_depth(Some(1)));
+        let tool = SpawnAgentTool::new(host);
+        // Parent already at depth 0 → child would be depth 1 → rejected when max=1.
+        let mut extras = std::collections::HashMap::new();
+        extras.insert(machi_tools::EXTRA_SPAWN_DEPTH.to_owned(), "0".into());
+        let ctx = ToolCallContext::default().with_extras(extras);
+        let err = tool
+            .call(ctx, json!({"prompt": "too deep"}))
+            .await
+            .expect_err("depth");
+        assert_eq!(err.code(), ErrorCode::ToolExecution);
+        assert!(
+            err.message().contains("depth") || err.message().contains("spawn"),
+            "unexpected message: {}",
+            err.message()
+        );
     }
 }

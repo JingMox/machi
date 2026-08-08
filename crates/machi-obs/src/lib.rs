@@ -17,10 +17,11 @@ pub mod redact;
 
 pub use metrics::{
     METRIC_COMPACTIONS_TOTAL, METRIC_SAMPLE_DURATION_MS, METRIC_SPAWNS_TOTAL, METRIC_TOKENS_TOTAL,
-    METRIC_TOOL_CALLS_TOTAL, METRIC_TOOL_DURATION_MS, METRIC_TURNS_TOTAL, METRIC_TURN_DURATION_MS,
-    METRIC_TURN_STEPS, METRIC_WORKFLOW_AGENTS_TOTAL, METRIC_WORKFLOW_RUNS_TOTAL, MetricsSink,
-    NoopMetrics, SharedMetrics, record_compaction, record_sample, record_spawn, record_tool_call,
-    record_turn, record_workflow_agents, record_workflow_run, required_metric_names,
+    METRIC_TOOL_CALLS_TOTAL, METRIC_TOOL_DURATION_MS, METRIC_TURN_DURATION_MS, METRIC_TURN_STEPS,
+    METRIC_TURNS_TOTAL, METRIC_WORKFLOW_AGENTS_TOTAL, METRIC_WORKFLOW_RUNS_TOTAL, MetricsSink,
+    NoopMetrics, SharedMetrics, emit_catalogue_smoke, metric_catalogue_snapshot, record_compaction,
+    record_sample, record_spawn, record_tool_call, record_turn, record_workflow_agents,
+    record_workflow_run, required_metric_names,
 };
 pub use prometheus::PrometheusRecorder;
 pub use recording::{CounterEvent, GaugeEvent, HistogramEvent, RecordingMetrics};
@@ -30,5 +31,5 @@ pub use redact::{REDACTED, looks_like_secret_key, redact_key_value, redact_map};
 // metrics. Re-export for a single import path in hosts.
 pub use machi_protocol::observability::{
     SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
-    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names,
+    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names, span_catalogue_snapshot,
 };

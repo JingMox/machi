@@ -16,13 +16,18 @@ pub mod host;
 pub mod journal;
 pub mod meta;
 pub mod run;
+pub mod store;
 pub mod validate;
 
 pub use engine::{WorkflowRunParams, run_workflow};
 pub use host::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
-pub use journal::{Journal, JournalEntry, JournalError};
+pub use journal::{Journal, JournalEntry, JournalError, request_hash};
 pub use meta::{MetaError, WorkflowMeta, extract_meta};
 pub use run::{PauseKind, WorkflowOutcome};
+pub use store::{
+    FileWorkflowRunStore, MemoryWorkflowRunStore, StoreError, WorkflowRunRecord, WorkflowRunStatus,
+    WorkflowRunStore,
+};
 pub use validate::{
     ValidationError, ValidationReport, default_probe_args, validate_script,
     validate_script_with_agent_budget,

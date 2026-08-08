@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use std::time::Instant;
 
+use futures::StreamExt;
 use machi_agent::Agent;
 use machi_compaction::{CompactionStrategy, MaxMessages};
-use machi_llm::{LlmSampler, SampleRequest, ToolChoice};
+use machi_llm::{LlmSampler, SampleEvent, SampleRequest, SampleResponse, ToolChoice};
 use machi_obs::{NoopMetrics, SharedMetrics, record_compaction, record_sample};
 use machi_tools::registry::CapabilityMode;
 use machi_tools::{
@@ -72,6 +73,12 @@ pub struct TurnOptions {
     pub stop_gates: Option<Arc<GateChain>>,
     /// Metrics sink (default no-op).
     pub metrics: SharedMetrics,
+    /// Nesting depth when this turn is a host-spawned agent (`None` = top-level session).
+    pub spawn_depth: Option<u32>,
+    /// Optional max output tokens for the sampler.
+    pub max_output_tokens: Option<u32>,
+    /// Prefer [`LlmSampler::sample_stream`] and aggregate into a full response.
+    pub use_stream: bool,
 }
 
 impl std::fmt::Debug for TurnOptions {
@@ -83,6 +90,9 @@ impl std::fmt::Debug for TurnOptions {
             .field("cwd", &self.cwd)
             .field("has_compaction", &self.compaction.is_some())
             .field("approval_policy", &self.approval_policy)
+            .field("spawn_depth", &self.spawn_depth)
+            .field("max_output_tokens", &self.max_output_tokens)
+            .field("use_stream", &self.use_stream)
             .finish_non_exhaustive()
     }
 }
@@ -103,6 +113,9 @@ impl Default for TurnOptions {
             approval_policy: ApprovalPolicy::Destructive,
             stop_gates: None,
             metrics: Arc::new(NoopMetrics),
+            spawn_depth: None,
+            max_output_tokens: None,
+            use_stream: false,
         }
     }
 }
@@ -171,6 +184,27 @@ impl TurnOptions {
     #[must_use]
     pub fn with_metrics(mut self, metrics: SharedMetrics) -> Self {
         self.metrics = metrics;
+        self
+    }
+
+    /// Set absolute deadline for the turn (sample + tools).
+    #[must_use]
+    pub const fn with_deadline(mut self, deadline: Deadline) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Prefer streaming sample aggregation for this turn.
+    #[must_use]
+    pub const fn with_stream(mut self, use_stream: bool) -> Self {
+        self.use_stream = use_stream;
+        self
+    }
+
+    /// Override stop-gate chain.
+    #[must_use]
+    pub fn with_stop_gates(mut self, gates: Arc<GateChain>) -> Self {
+        self.stop_gates = Some(gates);
         self
     }
 }
@@ -275,15 +309,14 @@ impl TurnRuntime {
             .with_metrics(Arc::clone(&options.metrics));
 
         loop {
-            if cancelled(&options) {
-                return Ok(TurnOutcome {
-                    run_id,
-                    output_text: String::new(),
-                    output_json: None,
-                    usage,
-                    steps,
-                    cancelled: true,
-                });
+            if options.cancel.is_cancelled() {
+                return Ok(empty_cancelled(run_id, usage, steps));
+            }
+            if deadline_expired(&options) {
+                return Err(MachiError::new(
+                    ErrorCode::RuntimeDeadline,
+                    "turn deadline expired",
+                ));
             }
             if steps >= max_steps {
                 return Err(MachiError::new(
@@ -294,7 +327,11 @@ impl TurnRuntime {
             steps = steps.saturating_add(1);
             let step_u32 = u32::try_from(steps).unwrap_or(u32::MAX);
 
-            maybe_compact(state, options.compaction.as_deref(), options.metrics.as_ref())?;
+            maybe_compact(
+                state,
+                options.compaction.as_deref(),
+                options.metrics.as_ref(),
+            )?;
 
             let tools = agent.tools().definitions(options.capability_mode);
             let request = SampleRequest {
@@ -303,7 +340,7 @@ impl TurnRuntime {
                 tools,
                 tool_choice: ToolChoice::Auto,
                 response_format: agent.definition().output_schema.clone(),
-                max_output_tokens: None,
+                max_output_tokens: options.max_output_tokens,
                 temperature: None,
                 cancel: options.cancel.clone(),
                 deadline: options.deadline,
@@ -311,7 +348,13 @@ impl TurnRuntime {
 
             let sample_span = info_span!("machi.sample", machi.step = step_u32);
             let sample_started = Instant::now();
-            let response = sampler.sample(request).instrument(sample_span).await?;
+            let response = match sample_once(sampler, request, &options)
+                .instrument(sample_span)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return map_sample_error(e, &options, run_id.clone(), usage, steps),
+            };
             let sample_ms = sample_started.elapsed().as_secs_f64() * 1000.0;
             record_sample(
                 options.metrics.as_ref(),
@@ -380,8 +423,7 @@ fn handle_final_assistant(ctx: &mut FinalCtx<'_>) -> Result<FinalStep, MachiErro
                     ));
                 }
                 *ctx.schema_retries_used = ctx.schema_retries_used.saturating_add(1);
-                ctx.state
-                    .append(Message::user(schema_retry_reminder(&err)));
+                ctx.state.append(Message::user(schema_retry_reminder(&err)));
                 return Ok(FinalStep::Continue);
             }
         }
@@ -429,13 +471,17 @@ async fn dispatch_tools(
     step_u32: u32,
 ) {
     state.append(message.clone());
+    let mut extras = std::collections::HashMap::new();
+    if let Some(depth) = options.spawn_depth {
+        extras.insert(machi_tools::EXTRA_SPAWN_DEPTH.to_owned(), depth.to_string());
+    }
     let ctx = ToolCallContext {
         cancel: options.cancel.clone(),
         deadline: options.deadline,
         cwd: options.cwd.clone(),
         session_id: options.session_id.clone(),
         agent_id: options.agent_id.clone(),
-        extras: Arc::new(std::collections::HashMap::new()),
+        extras: Arc::new(extras),
     };
     let requests: Vec<DispatchRequest> = message
         .tool_calls
@@ -485,8 +531,102 @@ fn maybe_compact(
     }
 }
 
-fn cancelled(options: &TurnOptions) -> bool {
-    options.cancel.is_cancelled() || options.deadline.is_some_and(|d| d.is_expired())
+fn deadline_expired(options: &TurnOptions) -> bool {
+    options.deadline.is_some_and(|d| d.is_expired())
+}
+
+async fn sample_once(
+    sampler: &dyn LlmSampler,
+    request: SampleRequest,
+    options: &TurnOptions,
+) -> Result<SampleResponse, MachiError> {
+    if options.use_stream {
+        let stream = sampler.sample_stream(request).await?;
+        collect_sample_stream(stream).await
+    } else {
+        sampler.sample(request).await
+    }
+}
+
+async fn collect_sample_stream(
+    mut stream: machi_llm::SampleStream,
+) -> Result<SampleResponse, MachiError> {
+    let mut message: Option<Message> = None;
+    let mut usage = Usage::zero();
+    let mut stop_reason = None;
+    let mut text_buf = String::new();
+
+    while let Some(ev) = stream.next().await {
+        match ev {
+            SampleEvent::TextDelta { text } => text_buf.push_str(&text),
+            SampleEvent::ToolCalls { message: m } => message = Some(m),
+            SampleEvent::Usage(u) => usage += u,
+            SampleEvent::Completed {
+                message: m,
+                stop_reason: reason,
+            } => {
+                message = Some(m);
+                stop_reason = reason;
+            }
+            SampleEvent::Failed { message: msg } => {
+                return Err(MachiError::new(ErrorCode::LlmInvalidResponse, msg));
+            }
+            _ => {}
+        }
+    }
+
+    let message = match message {
+        Some(m) => m,
+        None if !text_buf.is_empty() => Message::assistant(text_buf),
+        None => {
+            return Err(MachiError::new(
+                ErrorCode::LlmInvalidResponse,
+                "sample stream ended without Completed",
+            ));
+        }
+    };
+
+    Ok(SampleResponse {
+        message,
+        usage,
+        stop_reason,
+    })
+}
+
+fn map_sample_error(
+    e: MachiError,
+    options: &TurnOptions,
+    run_id: RunId,
+    usage: Usage,
+    steps: usize,
+) -> Result<TurnOutcome, MachiError> {
+    if deadline_expired(options) {
+        return Err(
+            MachiError::new(ErrorCode::RuntimeDeadline, e.message().to_owned()).with_source(e),
+        );
+    }
+    if e.code() == ErrorCode::LlmCancelled || options.cancel.is_cancelled() {
+        return Ok(TurnOutcome {
+            run_id,
+            output_text: String::new(),
+            output_json: None,
+            usage,
+            steps,
+            cancelled: true,
+        });
+    }
+    Err(e)
+}
+
+fn empty_cancelled(run_id: RunId, usage: Usage, steps: usize) -> TurnOutcome {
+    TurnOutcome {
+        run_id,
+        output_text: String::new(),
+        output_json: None,
+        usage,
+        steps,
+        cancelled: true,
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +694,31 @@ mod tests {
             _arguments: Value,
         ) -> Result<ToolResult, MachiError> {
             Ok(ToolResult::text("wrote"))
+        }
+    }
+
+    struct SubmitTool;
+
+    #[async_trait]
+    impl DynTool for SubmitTool {
+        fn name(&self) -> &'static str {
+            "submit"
+        }
+        fn description(&self) -> &'static str {
+            "submit"
+        }
+        fn parameters(&self) -> Value {
+            json!({"type":"object","properties":{}})
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata::read_only()
+        }
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _arguments: Value,
+        ) -> Result<ToolResult, MachiError> {
+            Ok(ToolResult::text("submitted"))
         }
     }
 
@@ -650,7 +815,10 @@ mod tests {
             .expect("turn continues after tool error");
         assert_eq!(out.output_text, "after-deny");
         let texts: String = state.messages().iter().map(Message::text).collect();
-        assert!(texts.contains("approval denied") || texts.contains("error:"), "{texts}");
+        assert!(
+            texts.contains("approval denied") || texts.contains("error:"),
+            "{texts}"
+        );
     }
 
     #[tokio::test]
@@ -668,9 +836,7 @@ mod tests {
             Message::user("3"),
             Message::user("4"),
         ]);
-        let opts = TurnOptions::default()
-            .with_max_messages(3)
-            .expect("max");
+        let opts = TurnOptions::default().with_max_messages(3).expect("max");
         let _ = TurnRuntime::new()
             .run(
                 &agent,
@@ -683,6 +849,223 @@ mod tests {
             .expect("turn");
         // system + compacted tail + new user + assistant at least
         assert!(state.messages().len() <= 6);
+        assert_eq!(
+            state.messages().first().map(Message::text).as_deref(),
+            Some("sys")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_before_sample() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("should-not-run");
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::new();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let out = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("hi".into()),
+                TurnOptions::default().with_cancel(cancel),
+            )
+            .await
+            .expect("cancelled ok");
+        assert!(out.cancelled);
+        assert!(out.output_text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deadline_before_sample() {
+        use std::time::Duration;
+
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("late");
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::new();
+        let err = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("hi".into()),
+                TurnOptions::default().with_deadline(Deadline::after(Duration::ZERO)),
+            )
+            .await
+            .expect_err("deadline");
+        assert_eq!(err.code(), ErrorCode::RuntimeDeadline);
+    }
+
+    #[tokio::test]
+    async fn structured_output_retry_then_ok() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("not-json");
+        sampler.push_text(r#"{"ok":true}"#);
+        let schema = json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+            "required": ["ok"]
+        });
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .output_schema(schema)
+            .max_steps(8)
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::new();
+        let out = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("give json".into()),
+                TurnOptions::default(),
+            )
+            .await
+            .expect("turn");
+        assert_eq!(out.output_json, Some(json!({"ok": true})));
+        assert!(out.steps >= 2);
+    }
+
+    #[tokio::test]
+    async fn structured_output_exhausted() {
+        let sampler = Arc::new(MockSampler::new());
+        // initial + STRUCTURED_OUTPUT_MAX_RETRIES bad attempts
+        for _ in 0..=STRUCTURED_OUTPUT_MAX_RETRIES {
+            sampler.push_text("nope");
+        }
+        let schema = json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+            "required": ["ok"]
+        });
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .output_schema(schema)
+            .max_steps(16)
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::new();
+        let err = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("give json".into()),
+                TurnOptions::default(),
+            )
+            .await
+            .expect_err("schema");
+        assert_eq!(err.code(), ErrorCode::RuntimeStructuredOutput);
+    }
+
+    #[tokio::test]
+    async fn completion_gate_forces_retry() {
+        use machi_agent::CompletionRequirement;
+
+        let sampler = Arc::new(MockSampler::new());
+        // first final without submit tool → gate continues; second final after tools
+        sampler.push_text("thinking");
+        let id = ToolCallId::new("s1").expect("id");
+        sampler.push_tools(Message::assistant_tools(vec![ToolCall {
+            id,
+            name: "submit".into(),
+            arguments: json!({}),
+        }]));
+        sampler.push_text("done");
+
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .tools(vec![Arc::new(SubmitTool)])
+            .completion(CompletionRequirement {
+                tool: "submit".into(),
+                reminder: "please call submit".into(),
+                max_retries: 3,
+            })
+            .max_steps(8)
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::new();
+        let out = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("finish".into()),
+                TurnOptions::default(),
+            )
+            .await
+            .expect("turn");
+        assert_eq!(out.output_text, "done");
+        assert!(
+            state
+                .messages()
+                .iter()
+                .any(|m| m.text().contains("please call submit")),
+            "expected completion reminder"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_sample_path() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("streamed-out");
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::new();
+        let out = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("hi".into()),
+                TurnOptions::default().with_stream(true),
+            )
+            .await
+            .expect("turn");
+        assert_eq!(out.output_text, "streamed-out");
+    }
+
+    #[tokio::test]
+    async fn token_threshold_compaction() {
+        use machi_compaction::TokenThreshold;
+
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("ok");
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .build()
+            .expect("agent");
+        let mut state = VecConversationState::from_messages(vec![
+            Message::system("sys"),
+            Message::user("aaaaaaaaaa"),
+            Message::user("bbbbbbbbbb"),
+            Message::user("cccccccccc"),
+            Message::user("dddddddddd"),
+        ]);
+        // token_estimate is coarse; force trigger with low max_tokens
+        let strategy = TokenThreshold::new(1, 3).expect("strategy");
+        let opts = TurnOptions::default().with_compaction(Arc::new(strategy));
+        let _ = TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("new".into()),
+                opts,
+            )
+            .await
+            .expect("turn");
         assert_eq!(
             state.messages().first().map(Message::text).as_deref(),
             Some("sys")

@@ -25,6 +25,10 @@ enum Command {
         messages: Vec<Message>,
         reply: oneshot::Sender<()>,
     },
+    Restore {
+        snapshot: ChatStateSnapshot,
+        reply: oneshot::Sender<()>,
+    },
     Snapshot {
         reply: oneshot::Sender<ChatStateSnapshot>,
     },
@@ -62,6 +66,14 @@ impl ChatStateHandle {
         Self { tx }
     }
 
+    /// Spawn an actor from a full checkpoint (messages + usage).
+    #[must_use]
+    pub fn spawn_from_snapshot(snapshot: ChatStateSnapshot) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(actor_loop(rx, snapshot.messages, snapshot.usage));
+        Self { tx }
+    }
+
     /// Append a message (strict tool pairing enforced).
     ///
     /// # Errors
@@ -92,10 +104,18 @@ impl ChatStateHandle {
         rx.await.map_err(|_| actor_gone())?
     }
 
-    /// Replace full history (compaction).
+    /// Replace full history (compaction). Does not clear usage.
     pub async fn replace(&self, messages: Vec<Message>) {
         let (reply, rx) = oneshot::channel();
         if self.tx.send(Command::Replace { messages, reply }).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    /// Restore messages **and** usage from a checkpoint.
+    pub async fn restore(&self, snapshot: ChatStateSnapshot) {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Command::Restore { snapshot, reply }).is_ok() {
             let _ = rx.await;
         }
     }
@@ -153,7 +173,7 @@ impl ChatStateHandle {
         store.save(&snap).await
     }
 
-    /// Replace state from a persistence backend when present.
+    /// Replace state from a persistence backend when present (messages + usage).
     ///
     /// # Errors
     ///
@@ -164,10 +184,24 @@ impl ChatStateHandle {
     ) -> Result<bool, MachiError> {
         match store.load().await? {
             Some(snap) => {
-                self.replace(snap.messages).await;
+                self.restore(snap).await;
                 Ok(true)
             }
             None => Ok(false),
+        }
+    }
+
+    /// Open a handle: load checkpoint when present, else empty seed.
+    ///
+    /// # Errors
+    ///
+    /// Backend I/O failures.
+    pub async fn open_or_new(
+        store: &dyn crate::persistence::ChatPersistence,
+    ) -> Result<Self, MachiError> {
+        match store.load().await? {
+            Some(snap) => Ok(Self::spawn_from_snapshot(snap)),
+            None => Ok(Self::spawn(vec![])),
         }
     }
 
@@ -228,10 +262,7 @@ fn actor_gone() -> MachiError {
 }
 
 fn map_strict(err: StrictAppendError) -> MachiError {
-    MachiError::new(
-        machi_types::ErrorCode::StateInvariant,
-        err.to_string(),
-    )
+    MachiError::new(machi_types::ErrorCode::StateInvariant, err.to_string())
 }
 
 async fn actor_loop(
@@ -265,6 +296,11 @@ async fn actor_loop(
                 reply,
             } => {
                 messages = next;
+                let _ = reply.send(());
+            }
+            Command::Restore { snapshot, reply } => {
+                messages = snapshot.messages;
+                usage = snapshot.usage;
                 let _ = reply.send(());
             }
             Command::Snapshot { reply } => {
@@ -330,6 +366,24 @@ mod tests {
             .await
             .expect("result");
         assert_eq!(h.messages().await.len(), 3);
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_usage() {
+        use crate::ledger::UsageLedger;
+        use machi_types::Usage;
+
+        let mut usage = UsageLedger::new();
+        usage.record_main(Usage::new(10, 5));
+        let snap = ChatStateSnapshot {
+            messages: vec![Message::user("hi")],
+            usage,
+        };
+        let h = ChatStateHandle::spawn_from_snapshot(snap);
+        let s = h.snapshot().await;
+        assert_eq!(s.messages.len(), 1);
+        assert_eq!(s.usage.main.total_tokens, 15);
         h.shutdown().await;
     }
 }

@@ -184,9 +184,10 @@ async fn walk_match(
 }
 
 fn push_if_match(path: &Path, root: &Path, pattern: &str, out: &mut Vec<String>) {
-    let rel = path
-        .strip_prefix(root)
-        .map_or_else(|_| path.to_string_lossy().into_owned(), |p| p.display().to_string());
+    let rel = path.strip_prefix(root).map_or_else(
+        |_| path.to_string_lossy().into_owned(),
+        |p| p.display().to_string(),
+    );
     let rel_norm = rel.replace('\\', "/");
     if glob_match(pattern, &rel_norm) {
         out.push(rel_norm);
@@ -213,10 +214,7 @@ fn match_glob(pat: &[u8], text: &[u8]) -> bool {
             if rest.is_empty() {
                 return true;
             }
-            (0..=text.len()).any(|i| {
-                text.get(i..)
-                    .is_some_and(|suffix| match_glob(rest, suffix))
-            })
+            (0..=text.len()).any(|i| text.get(i..).is_some_and(|suffix| match_glob(rest, suffix)))
         }
         (Some(b'*'), _) => {
             let rest = pat.get(1..).unwrap_or(&[]);

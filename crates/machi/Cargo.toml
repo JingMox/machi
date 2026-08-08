@@ -41,5 +41,9 @@ serde_json = { workspace = true }
 tempfile = "3"
 tokio-util = { workspace = true }
 
+[[example]]
+name = "session_checkpoint"
+required-features = ["state"]
+
 [lints]
 workspace = true

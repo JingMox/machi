@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use machi_tools::stream::ToolStream;
 use machi_tools::{
     DynTool, ToolCallContext, ToolError, ToolMetadata, ToolProgress, ToolResult, with_progress,
 };
-use machi_tools::stream::ToolStream;
 use serde_json::{Value, json};
 use tokio::fs;
 
@@ -50,7 +50,6 @@ impl ReadFileTool {
         self.max_bytes = max_bytes;
         self
     }
-
 }
 
 #[async_trait]

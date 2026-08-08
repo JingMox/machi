@@ -7,6 +7,10 @@ use std::sync::Arc;
 use machi_types::{AgentId, Deadline, SessionId};
 use tokio_util::sync::CancellationToken;
 
+/// Extra key: nesting depth of the agent that owns this tool call
+/// (`0` = first host-spawned level). Used by `spawn_agent` to fail-closed on depth.
+pub const EXTRA_SPAWN_DEPTH: &str = "machi.spawn_depth";
+
 /// Context passed into every tool invocation.
 #[derive(Debug, Clone)]
 pub struct ToolCallContext {
@@ -50,6 +54,21 @@ impl ToolCallContext {
     pub fn with_deadline(mut self, deadline: Deadline) -> Self {
         self.deadline = Some(deadline);
         self
+    }
+
+    /// Builder: replace extras map.
+    #[must_use]
+    pub fn with_extras(mut self, extras: HashMap<String, String>) -> Self {
+        self.extras = Arc::new(extras);
+        self
+    }
+
+    /// Read nesting depth of the current agent (`None` = top-level session turn).
+    #[must_use]
+    pub fn spawn_depth(&self) -> Option<u32> {
+        self.extras
+            .get(EXTRA_SPAWN_DEPTH)
+            .and_then(|s| s.parse().ok())
     }
 
     /// True when cancel requested or deadline expired.

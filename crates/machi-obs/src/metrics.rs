@@ -26,6 +26,9 @@ pub const METRIC_WORKFLOW_AGENTS_TOTAL: &str = "machi_workflow_agents_total";
 pub const METRIC_COMPACTIONS_TOTAL: &str = "machi_compactions_total";
 
 /// Required metric name catalogue (contract tests / CI snapshots).
+///
+/// **Rename = break:** CI asserts the exact ordered snapshot from
+/// [`metric_catalogue_snapshot`].
 #[must_use]
 pub fn required_metric_names() -> &'static [&'static str] {
     &[
@@ -41,6 +44,23 @@ pub fn required_metric_names() -> &'static [&'static str] {
         METRIC_WORKFLOW_AGENTS_TOTAL,
         METRIC_COMPACTIONS_TOTAL,
     ]
+}
+
+/// Exact newline-joined catalogue for CI golden comparison.
+#[must_use]
+pub fn metric_catalogue_snapshot() -> String {
+    required_metric_names().join("\n")
+}
+
+/// Emit every stable series once (for export / dashboard smoke).
+pub fn emit_catalogue_smoke(metrics: &dyn MetricsSink) {
+    record_turn(metrics, "ok", 1, 1.0);
+    record_spawn(metrics, "ok");
+    record_tool_call(metrics, "smoke", "ok", 1.0);
+    record_sample(metrics, 1.0, 2, 3);
+    record_workflow_run(metrics, "completed");
+    record_workflow_agents(metrics, 1);
+    record_compaction(metrics, "max_messages", "ok");
 }
 
 /// Host-provided metrics backend.
@@ -134,6 +154,20 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// Golden snapshot — intentional fail on rename/reorder/add/remove.
+    const METRIC_CATALOGUE_GOLDEN: &str = "\
+machi_turns_total
+machi_turn_steps
+machi_turn_duration_ms
+machi_tool_calls_total
+machi_tool_duration_ms
+machi_sample_duration_ms
+machi_tokens_total
+machi_spawns_total
+machi_workflow_runs_total
+machi_workflow_agents_total
+machi_compactions_total";
+
     #[test]
     fn metric_catalogue_is_stable_and_prefixed() {
         let names = required_metric_names();
@@ -145,6 +179,41 @@ mod tests {
                 "metric {name} must start with machi_"
             );
             assert!(seen.insert(*name), "duplicate metric {name}");
+        }
+    }
+
+    #[test]
+    fn metric_catalogue_snapshot_matches_golden() {
+        assert_eq!(
+            metric_catalogue_snapshot(),
+            METRIC_CATALOGUE_GOLDEN,
+            "metric catalogue changed — update golden only with deliberate contract change"
+        );
+    }
+
+    #[test]
+    fn emit_catalogue_smoke_covers_all_names() {
+        let cap = Capture::default();
+        emit_catalogue_smoke(&cap);
+        let owned: Vec<String> = cap
+            .counters
+            .lock()
+            .expect("lock")
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        let names: std::collections::HashSet<&str> = owned.iter().map(String::as_str).collect();
+        // Histograms go elsewhere; counters cover the main series.
+        for expected in [
+            METRIC_TURNS_TOTAL,
+            METRIC_SPAWNS_TOTAL,
+            METRIC_TOOL_CALLS_TOTAL,
+            METRIC_TOKENS_TOTAL,
+            METRIC_WORKFLOW_RUNS_TOTAL,
+            METRIC_WORKFLOW_AGENTS_TOTAL,
+            METRIC_COMPACTIONS_TOTAL,
+        ] {
+            assert!(names.contains(expected), "missing counter {expected}");
         }
     }
 

@@ -86,9 +86,7 @@ pub fn compact_max_messages(messages: Vec<Message>, max_messages: usize) -> Vec<
 
 fn split_leading_system(messages: &[Message]) -> (Option<Message>, Vec<Message>) {
     match messages.split_first() {
-        Some((first, rest)) if first.role == Role::System => {
-            (Some(first.clone()), rest.to_vec())
-        }
+        Some((first, rest)) if first.role == Role::System => (Some(first.clone()), rest.to_vec()),
         _ => (None, messages.to_vec()),
     }
 }
@@ -111,7 +109,10 @@ mod tests {
             .expect("compact");
         assert!(out.changed);
         assert_eq!(out.messages.len(), 3);
-        assert_eq!(out.messages.first().map(Message::text).as_deref(), Some("sys"));
+        assert_eq!(
+            out.messages.first().map(Message::text).as_deref(),
+            Some("sys")
+        );
         assert_eq!(out.messages.get(2).map(Message::text).as_deref(), Some("4"));
     }
 }

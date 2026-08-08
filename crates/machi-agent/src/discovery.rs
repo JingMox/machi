@@ -77,7 +77,10 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<AgentDefinition, MachiError> 
 ///
 /// Directory read failures; individual bad files are skipped and collected as soft errors
 /// only when `strict` is true (then first error fails).
-pub fn discover_in_dir(root: impl AsRef<Path>, strict: bool) -> Result<Vec<AgentDefinition>, MachiError> {
+pub fn discover_in_dir(
+    root: impl AsRef<Path>,
+    strict: bool,
+) -> Result<Vec<AgentDefinition>, MachiError> {
     let root = root.as_ref();
     let rd = fs::read_dir(root).map_err(|e| {
         MachiError::new(
@@ -87,9 +90,8 @@ pub fn discover_in_dir(root: impl AsRef<Path>, strict: bool) -> Result<Vec<Agent
     })?;
     let mut out = Vec::new();
     for entry in rd {
-        let entry = entry.map_err(|e| {
-            MachiError::new(ErrorCode::AgentBuild, format!("read_dir entry: {e}"))
-        })?;
+        let entry = entry
+            .map_err(|e| MachiError::new(ErrorCode::AgentBuild, format!("read_dir entry: {e}")))?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
@@ -183,7 +185,9 @@ fn split_frontmatter(raw: &str) -> Result<(String, String), MachiError> {
 }
 
 /// Minimal `key: value` YAML map (string values only; no nested objects).
-fn parse_simple_yaml_map(front: &str) -> Result<std::collections::BTreeMap<String, String>, MachiError> {
+fn parse_simple_yaml_map(
+    front: &str,
+) -> Result<std::collections::BTreeMap<String, String>, MachiError> {
     let mut map = std::collections::BTreeMap::new();
     for line in front.lines() {
         let line = line.trim();
@@ -239,9 +243,6 @@ You review diffs carefully.\n";
         write!(f, "---\nname: helper\nmodel: m\n---\n\nHelp.\n").expect("write");
         let defs = discover_in_dir(dir.path(), true).expect("discover");
         assert_eq!(defs.len(), 1);
-        assert_eq!(
-            defs.first().map(|d| d.name.as_str()),
-            Some("helper")
-        );
+        assert_eq!(defs.first().map(|d| d.name.as_str()), Some("helper"));
     }
 }

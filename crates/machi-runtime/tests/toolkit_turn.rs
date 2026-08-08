@@ -11,9 +11,7 @@ use std::sync::Arc;
 
 use machi_agent::AgentBuilder;
 use machi_llm::MockSampler;
-use machi_runtime::{
-    ConversationState, TurnInput, TurnOptions, TurnRuntime, VecConversationState,
-};
+use machi_runtime::{ConversationState, TurnInput, TurnOptions, TurnRuntime, VecConversationState};
 use machi_toolkit::{ReadFileTool, WriteFileTool};
 use machi_types::{Message, ToolCall, ToolCallId};
 use serde_json::json;

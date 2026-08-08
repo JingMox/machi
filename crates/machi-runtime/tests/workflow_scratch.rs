@@ -9,9 +9,7 @@
 use std::sync::Arc;
 
 use machi_llm::MockSampler;
-use machi_runtime::{
-    InProcessHost, SessionHost, WorkflowSideEffects, run_workflow_configured,
-};
+use machi_runtime::{InProcessHost, SessionHost, WorkflowSideEffects, run_workflow_configured};
 use machi_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

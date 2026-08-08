@@ -9,6 +9,8 @@ pub mod builder;
 pub mod definition;
 pub mod discovery;
 pub mod instance;
+pub mod prompt;
+pub mod registry;
 
 pub use builder::AgentBuilder;
 pub use definition::{AgentDefinition, CompletionRequirement, Instructions, ToolPolicy};
@@ -17,3 +19,7 @@ pub use discovery::{
     parse_definition_markdown,
 };
 pub use instance::Agent;
+pub use prompt::{
+    IdentityAssembler, PROJECT_AGENTS_MD, ProjectPromptAssembler, PromptAssembler, agents_md_path,
+};
+pub use registry::AgentRegistry;

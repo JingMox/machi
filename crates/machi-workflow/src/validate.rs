@@ -109,9 +109,10 @@ pub fn validate_script_with_agent_budget(
 
 fn summarize_outcome(outcome: &WorkflowOutcome) -> (bool, String) {
     match outcome {
-        WorkflowOutcome::Completed { result } => {
-            (true, format!("completed: {}", truncate(&result.to_string())))
-        }
+        WorkflowOutcome::Completed { result } => (
+            true,
+            format!("completed: {}", truncate(&result.to_string())),
+        ),
         WorkflowOutcome::Paused { kind, message } => (
             true,
             format!("paused ({}): {}", kind.as_str(), truncate(message)),
@@ -231,7 +232,12 @@ mod tests {
                 .unwrap_or("")
                 .is_empty()
         );
-        assert!(args.get("breadth").and_then(serde_json::Value::as_u64).unwrap_or(0) >= 2);
+        assert!(
+            args.get("breadth")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                >= 2
+        );
     }
 
     #[test]

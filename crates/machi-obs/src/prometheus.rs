@@ -1,6 +1,6 @@
 //! Prometheus text exposition for captured metrics (zero external deps).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
@@ -24,51 +24,106 @@ impl PrometheusRecorder {
         Self::default()
     }
 
-    /// Render Prometheus exposition text.
+    /// Render Prometheus exposition text (sorted, one `# TYPE` per metric name).
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::new();
-        {
-            let counters = self
-                .counters
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for ((name, labels), value) in counters.iter() {
-                let _ = writeln!(
-                    out,
-                    "# TYPE {name} counter\n{name}{} {value}",
-                    format_labels(labels)
-                );
-            }
-        }
-        {
-            let gauges = self
-                .gauges
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for ((name, labels), value) in gauges.iter() {
-                let _ = writeln!(
-                    out,
-                    "# TYPE {name} gauge\n{name}{} {value}",
-                    format_labels(labels)
-                );
-            }
-        }
-        {
-            let histograms = self
-                .histograms
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for ((name, labels), samples) in histograms.iter() {
-                let count = samples.len();
-                let sum: f64 = samples.iter().sum();
-                let labs = format_labels(labels);
-                let _ = writeln!(out, "# TYPE {name} summary");
-                let _ = writeln!(out, "{name}_count{labs} {count}");
-                let _ = writeln!(out, "{name}_sum{labs} {sum}");
-            }
-        }
+        let mut typed = BTreeSet::new();
+
+        render_counters(&self.counters, &mut out, &mut typed);
+        render_gauges(&self.gauges, &mut out, &mut typed);
+        render_histograms(&self.histograms, &mut out, &mut typed);
         out
+    }
+
+    /// Series names that appear in the current capture (counters/histograms/gauges).
+    #[must_use]
+    pub fn series_names(&self) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        for (n, _) in self
+            .counters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+        {
+            names.insert(n.clone());
+        }
+        for (n, _) in self
+            .histograms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+        {
+            names.insert(n.clone());
+        }
+        for (n, _) in self
+            .gauges
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+        {
+            names.insert(n.clone());
+        }
+        names
+    }
+}
+
+fn render_counters(
+    counters: &Mutex<BTreeMap<SeriesKey, u64>>,
+    out: &mut String,
+    typed: &mut BTreeSet<String>,
+) {
+    let guard = counters
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for ((name, labels), value) in guard.iter() {
+        emit_type_once(out, typed, name, "counter", "Machi kernel counter");
+        let _ = writeln!(out, "{name}{} {value}", format_labels(labels));
+    }
+}
+
+fn render_gauges(
+    gauges: &Mutex<BTreeMap<SeriesKey, f64>>,
+    out: &mut String,
+    typed: &mut BTreeSet<String>,
+) {
+    let guard = gauges
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for ((name, labels), value) in guard.iter() {
+        emit_type_once(out, typed, name, "gauge", "Machi kernel gauge");
+        let _ = writeln!(out, "{name}{} {value}", format_labels(labels));
+    }
+}
+
+fn render_histograms(
+    histograms: &Mutex<BTreeMap<SeriesKey, Vec<f64>>>,
+    out: &mut String,
+    typed: &mut BTreeSet<String>,
+) {
+    let guard = histograms
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for ((name, labels), samples) in guard.iter() {
+        emit_type_once(out, typed, name, "summary", "Machi kernel summary");
+        let count = samples.len();
+        let sum: f64 = samples.iter().sum();
+        let labs = format_labels(labels);
+        let _ = writeln!(out, "{name}_count{labs} {count}");
+        let _ = writeln!(out, "{name}_sum{labs} {sum}");
+    }
+}
+
+fn emit_type_once(
+    out: &mut String,
+    typed: &mut BTreeSet<String>,
+    name: &str,
+    type_name: &str,
+    help: &str,
+) {
+    if typed.insert(name.to_owned()) {
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} {type_name}");
     }
 }
 
@@ -129,7 +184,10 @@ fn escape_label(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{METRIC_TURNS_TOTAL, record_turn};
+    use crate::metrics::{
+        METRIC_SAMPLE_DURATION_MS, METRIC_TURNS_TOTAL, emit_catalogue_smoke, record_turn,
+        required_metric_names,
+    };
 
     #[test]
     fn renders_counter() {
@@ -138,6 +196,41 @@ mod tests {
         let text = p.render();
         assert!(text.contains(METRIC_TURNS_TOTAL), "{text}");
         assert!(text.contains("status=\"ok\""), "{text}");
-        assert!(text.contains("_count") || text.contains("counter"), "{text}");
+        assert!(text.contains("# TYPE"), "{text}");
+        assert!(text.contains("# HELP"), "{text}");
+        let type_lines = text
+            .lines()
+            .filter(|l| *l == format!("# TYPE {METRIC_TURNS_TOTAL} counter"))
+            .count();
+        assert_eq!(type_lines, 1, "{text}");
+    }
+
+    #[test]
+    fn golden_export_covers_catalogue() {
+        let p = PrometheusRecorder::new();
+        emit_catalogue_smoke(&p);
+        let text = p.render();
+        let names = p.series_names();
+        for required in required_metric_names() {
+            assert!(
+                names.contains(*required),
+                "export missing {required}\n{text}"
+            );
+        }
+        assert!(
+            text.contains(&format!("{METRIC_SAMPLE_DURATION_MS}_count")),
+            "{text}"
+        );
+        assert!(text.contains("# HELP"));
+        assert!(text.contains("# TYPE"));
+        assert!(text.contains("status=\"ok\"") || text.contains("outcome=\"completed\""));
+    }
+
+    #[test]
+    fn escapes_label_values() {
+        let p = PrometheusRecorder::new();
+        p.counter("machi_test", 1, &[("path", r#"a"b\c"#)]);
+        let text = p.render();
+        assert!(text.contains(r#"path="a\"b\\c""#), "{text}");
     }
 }

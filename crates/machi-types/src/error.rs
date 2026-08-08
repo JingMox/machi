@@ -78,6 +78,10 @@ pub enum ErrorCode {
     HostSpawn,
     /// Agent budget exhausted.
     HostBudget,
+    /// Nested spawn depth exceeded.
+    HostDepth,
+    /// Concurrent nested agent cap exceeded.
+    HostConcurrency,
     /// Host capability unsupported.
     HostUnsupported,
     /// Host cancelled.
@@ -146,6 +150,8 @@ impl ErrorCode {
             Self::RuntimeDeadline => "runtime.deadline",
             Self::HostSpawn => "host.spawn",
             Self::HostBudget => "host.budget",
+            Self::HostDepth => "host.depth",
+            Self::HostConcurrency => "host.concurrency",
             Self::HostUnsupported => "host.unsupported",
             Self::HostCancelled => "host.cancelled",
             Self::HostIsolation => "host.isolation",
@@ -189,6 +195,8 @@ impl ErrorCode {
             | Self::RuntimeDeadline => "runtime",
             Self::HostSpawn
             | Self::HostBudget
+            | Self::HostDepth
+            | Self::HostConcurrency
             | Self::HostUnsupported
             | Self::HostCancelled
             | Self::HostIsolation => "host",
@@ -235,6 +243,8 @@ impl ErrorCode {
             | Self::RuntimeStructuredOutput
             | Self::RuntimeDeadline
             | Self::HostBudget
+            | Self::HostDepth
+            | Self::HostConcurrency
             | Self::HostUnsupported
             | Self::WorkflowDivergence
             | Self::WorkflowBudget

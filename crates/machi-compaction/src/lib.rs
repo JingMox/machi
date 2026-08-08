@@ -7,6 +7,8 @@
 
 pub mod max_messages;
 pub mod strategy;
+pub mod token_threshold;
 
 pub use max_messages::MaxMessages;
 pub use strategy::{CompactionOutcome, CompactionStrategy};
+pub use token_threshold::TokenThreshold;

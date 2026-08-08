@@ -46,6 +46,8 @@ pub mod field {
 }
 
 /// All required span names (contract test surface).
+///
+/// **Rename = break:** CI asserts [`span_catalogue_snapshot`].
 #[must_use]
 pub fn required_span_names() -> &'static [&'static str] {
     &[
@@ -61,9 +63,26 @@ pub fn required_span_names() -> &'static [&'static str] {
     ]
 }
 
+/// Exact newline-joined span catalogue for CI golden comparison.
+#[must_use]
+pub fn span_catalogue_snapshot() -> String {
+    required_span_names().join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SPAN_CATALOGUE_GOLDEN: &str = "\
+machi.session
+machi.turn
+machi.sample
+machi.tool
+machi.tool.batch
+machi.spawn
+machi.workflow
+machi.workflow.host
+machi.compact";
 
     #[test]
     fn span_names_are_machi_prefixed_and_unique() {
@@ -77,6 +96,15 @@ mod tests {
             );
             assert!(seen.insert(*name), "duplicate span {name}");
         }
+    }
+
+    #[test]
+    fn span_catalogue_snapshot_matches_golden() {
+        assert_eq!(
+            span_catalogue_snapshot(),
+            SPAN_CATALOGUE_GOLDEN,
+            "span catalogue changed — update golden only with deliberate contract change"
+        );
     }
 
     #[test]

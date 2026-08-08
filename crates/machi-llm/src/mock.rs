@@ -193,8 +193,9 @@ mod tests {
                     assert_eq!(message.text(), "streamed");
                     saw_done = true;
                 }
-                SampleEvent::Usage(_) | SampleEvent::ToolCalls { .. } | SampleEvent::Failed { .. } => {
-                }
+                SampleEvent::Usage(_)
+                | SampleEvent::ToolCalls { .. }
+                | SampleEvent::Failed { .. } => {}
             }
         }
         assert!(saw_text && saw_done);

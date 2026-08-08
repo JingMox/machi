@@ -1,4 +1,4 @@
-//! Facade-level integration: dynamic delegation + journaled workflow modes.
+//! Dual multi-agent contract suite: Mode A (dynamic) + Mode B (journaled workflow).
 #![allow(
     unused_crate_dependencies,
     reason = "integration binary links facade feature deps"
@@ -11,20 +11,28 @@ mod dual {
         clippy::unwrap_used,
         clippy::indexing_slicing,
         clippy::missing_assert_message,
-        reason = "integration tests use expect for setup and assert outcomes"
+        clippy::panic,
+        clippy::excessive_nesting,
+        reason = "integration tests use expect/panic for setup and assert outcomes"
     )]
 
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use async_trait::async_trait;
     use machi::{
-        ErrorCode, InProcessHost, Journal, MockSampler, SessionHost, SpawnOpts, WorkflowOutcome,
-        WorkflowRunParams, run_workflow_on_host,
+        DynTool, ErrorCode, HostError, InProcessHost, Journal, LlmSampler, MachiError, MockSampler,
+        SampleRequest, SampleResponse, SessionHost, SpawnAgentTool, SpawnOpts, ToolCallContext,
+        WorkflowOutcome, WorkflowRunParams, run_workflow_on_host,
     };
+    use serde_json::json;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
+    // ── Mode A ──────────────────────────────────────────────────────────
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn dynamic_delegation_two_workers_via_facade() {
+    async fn a_dynamic_delegation_two_workers() {
         let sampler = Arc::new(MockSampler::new());
         sampler.map_user_text("do A", "result-A");
         sampler.map_user_text("do B", "result-B");
@@ -38,7 +46,7 @@ mod dual {
             .await
             .expect("spawn_agents");
 
-        assert_eq!(results.len(), 2, "expected two worker results");
+        assert_eq!(results.len(), 2);
         assert_eq!(results[0].label.as_deref(), Some("A"));
         assert_eq!(results[1].label.as_deref(), Some("B"));
         assert_eq!(results[0].output.as_str(), Some("result-A"));
@@ -48,7 +56,7 @@ mod dual {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn dynamic_delegation_budget_fail_closed() {
+    async fn a_budget_fail_closed() {
         let sampler = Arc::new(MockSampler::new());
         sampler.map_user_text("only", "ok");
         let host = InProcessHost::new(sampler, Vec::new()).with_agent_budget(1);
@@ -63,9 +71,104 @@ mod dual {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn workflow_mode_plan_and_parallel_via_facade() {
+    async fn a_cancel_before_start() {
         let sampler = Arc::new(MockSampler::new());
-        // Key concurrent workers; plan stays FIFO (runs before parallel barrier).
+        let host = InProcessHost::new(sampler, Vec::new());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = host
+            .spawn_agent(SpawnOpts::new("x").with_cancel(cancel))
+            .await
+            .expect_err("cancel");
+        assert_eq!(err.code(), ErrorCode::HostCancelled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_depth_exceeded() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("ok", "done");
+        let host = InProcessHost::new(sampler, Vec::new()).with_max_spawn_depth(Some(1));
+        host.spawn_agent(SpawnOpts::new("ok").with_depth(0))
+            .await
+            .expect("depth 0");
+        let err = host
+            .spawn_agent(SpawnOpts::new("ok").with_depth(1))
+            .await
+            .expect_err("depth");
+        assert_eq!(err.code(), ErrorCode::HostDepth);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_concurrent_children_cap() {
+        struct HoldingSampler {
+            inner: MockSampler,
+            release: tokio::sync::Notify,
+            entered: tokio::sync::Notify,
+        }
+
+        #[async_trait]
+        impl LlmSampler for HoldingSampler {
+            async fn sample(&self, request: SampleRequest) -> Result<SampleResponse, MachiError> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                self.inner.sample(request).await
+            }
+        }
+
+        let holder = Arc::new(HoldingSampler {
+            inner: MockSampler::new(),
+            release: tokio::sync::Notify::new(),
+            entered: tokio::sync::Notify::new(),
+        });
+        holder.inner.map_user_text("slow", "done");
+        holder.inner.map_user_text("fast", "x");
+
+        let sampler: Arc<dyn LlmSampler> = holder.clone();
+        let host =
+            Arc::new(InProcessHost::new(sampler, Vec::new()).with_max_concurrent_children(Some(1)));
+        let h1 = Arc::clone(&host);
+        let t1 = tokio::spawn(async move { h1.spawn_agent(SpawnOpts::new("slow")).await });
+        holder.entered.notified().await;
+
+        let err = host
+            .spawn_agent(SpawnOpts::new("fast"))
+            .await
+            .expect_err("concurrency");
+        assert_eq!(err.code(), ErrorCode::HostConcurrency);
+
+        holder.release.notify_one();
+        t1.await.expect("join").expect("first ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spawn_agent_tool_e2e() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("child task", "child-done");
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        let tool = SpawnAgentTool::new(host);
+        let result = tool
+            .call(
+                ToolCallContext::default(),
+                json!({"prompt": "child task", "label": "w1"}),
+            )
+            .await
+            .expect("call");
+        assert!(!result.is_error);
+        assert_eq!(
+            result
+                .structured
+                .as_ref()
+                .and_then(|s| s.get("output"))
+                .and_then(|v| v.as_str()),
+            Some("child-done")
+        );
+    }
+
+    // ── Mode B ──────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b_workflow_plan_and_parallel() {
+        let sampler = Arc::new(MockSampler::new());
         sampler.push_text("plan-out");
         sampler.map_user_text("w0", "w0-out");
         sampler.map_user_text("w1", "w1-out");
@@ -85,7 +188,7 @@ mod dual {
             host,
             WorkflowRunParams {
                 script: script.into(),
-                args: serde_json::json!({}),
+                args: json!({}),
                 journal: Journal::new(None),
                 host_tx: tx,
                 cancel: CancellationToken::new(),
@@ -97,7 +200,7 @@ mod dual {
         .expect("workflow");
 
         let WorkflowOutcome::Completed { result } = outcome else {
-            unreachable!("expected completed outcome");
+            panic!("expected completed: {outcome:?}");
         };
         assert_eq!(
             result.pointer("/plan/output").and_then(|v| v.as_str()),
@@ -119,12 +222,7 @@ mod dual {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn workflow_resume_skips_completed_host_calls() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        use async_trait::async_trait;
-        use machi::{LlmSampler, MachiError, SampleRequest, SampleResponse};
-
+    async fn b_resume_skips_completed_host_calls() {
         struct CountMock {
             inner: MockSampler,
             calls: AtomicUsize,
@@ -160,7 +258,7 @@ mod dual {
             Arc::clone(&host),
             WorkflowRunParams {
                 script: script.into(),
-                args: serde_json::json!({}),
+                args: json!({}),
                 journal: Journal::new(Some(path.clone())),
                 host_tx: tx,
                 cancel: CancellationToken::new(),
@@ -174,6 +272,7 @@ mod dual {
         let after_first = sampler.calls.load(Ordering::SeqCst);
         assert_eq!(after_first, 2, "first run samples twice");
 
+        // Cross-process simulation: drop host path and reload journal from disk.
         let journal = Journal::load(path).expect("load");
         assert_eq!(journal.len(), 2);
         let (tx2, _rx2) = mpsc::unbounded_channel();
@@ -181,7 +280,7 @@ mod dual {
             host,
             WorkflowRunParams {
                 script: script.into(),
-                args: serde_json::json!({}),
+                args: json!({}),
                 journal,
                 host_tx: tx2,
                 cancel: CancellationToken::new(),
@@ -197,5 +296,248 @@ mod dual {
             after_first,
             "resume must not re-sample"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b_journal_divergence_on_resume() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("div.jsonl");
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("first");
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        let script_a = r#"
+            let meta = #{ name: "div", description: "d" };
+            let a = agent("a");
+            complete(#{ a: a });
+        "#;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let o1 = run_workflow_on_host(
+            Arc::clone(&host),
+            WorkflowRunParams {
+                script: script_a.into(),
+                args: json!({}),
+                journal: Journal::new(Some(path.clone())),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(8),
+        )
+        .await
+        .expect("run1");
+        assert!(matches!(o1, WorkflowOutcome::Completed { .. }));
+
+        // Different prompt at same seq → divergence.
+        let script_b = r#"
+            let meta = #{ name: "div", description: "d" };
+            let a = agent("DIFFERENT");
+            complete(#{ a: a });
+        "#;
+        let journal = Journal::load(path).expect("load");
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let o2 = run_workflow_on_host(
+            host,
+            WorkflowRunParams {
+                script: script_b.into(),
+                args: json!({}),
+                journal,
+                host_tx: tx2,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(8),
+        )
+        .await
+        .expect("channel ok");
+        match o2 {
+            WorkflowOutcome::Failed { error, .. } => {
+                assert!(
+                    error.to_lowercase().contains("diverg") || error.contains("journal"),
+                    "unexpected error: {error}"
+                );
+            }
+            other => panic!("expected Failed on divergence, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b_budget_reserve_exceed() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("a", "1");
+        sampler.map_user_text("b", "2");
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        // parallel of 2 with budget 1 should fail at reserve.
+        let script = r#"
+            let meta = #{ name: "budget", description: "b" };
+            let ws = parallel([
+                #{ prompt: "a" },
+                #{ prompt: "b" },
+            ]);
+            complete(#{ ws: ws });
+        "#;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let outcome = run_workflow_on_host(
+            host,
+            WorkflowRunParams {
+                script: script.into(),
+                args: json!({}),
+                journal: Journal::new(None),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(1),
+        )
+        .await
+        .expect("adapter");
+        assert!(
+            matches!(
+                outcome,
+                WorkflowOutcome::BudgetExceeded { .. } | WorkflowOutcome::Failed { .. }
+            ),
+            "expected budget fail, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b_cancel_mid_parallel() {
+        struct HoldingSampler {
+            entered: tokio::sync::Notify,
+        }
+
+        #[async_trait]
+        impl LlmSampler for HoldingSampler {
+            async fn sample(&self, request: SampleRequest) -> Result<SampleResponse, MachiError> {
+                self.entered.notify_one();
+                // Park until cancelled via request token.
+                request.cancel.cancelled().await;
+                Err(MachiError::new(ErrorCode::LlmCancelled, "cancelled"))
+            }
+        }
+
+        let holder = Arc::new(HoldingSampler {
+            entered: tokio::sync::Notify::new(),
+        });
+        let sampler: Arc<dyn LlmSampler> = holder.clone();
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        let cancel = CancellationToken::new();
+        let script = r#"
+            let meta = #{ name: "cancel", description: "c" };
+            let a = agent("slow");
+            complete(#{ a: a });
+        "#;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let cancel_c = cancel.clone();
+        let run = tokio::spawn(async move {
+            run_workflow_on_host(
+                host,
+                WorkflowRunParams {
+                    script: script.into(),
+                    args: json!({}),
+                    journal: Journal::new(None),
+                    host_tx: tx,
+                    cancel: cancel_c,
+                    max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+                },
+                Some(8),
+            )
+            .await
+        });
+        holder.entered.notified().await;
+        cancel.cancel();
+        let outcome = run.await.expect("join").expect("adapter");
+        assert!(
+            matches!(
+                outcome,
+                WorkflowOutcome::Cancelled | WorkflowOutcome::Failed { .. }
+            ),
+            "expected cancel-ish outcome, got {outcome:?}"
+        );
+    }
+
+    // ── A + B isomorphism ───────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ab_workflow_spend_uses_same_host_path() {
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("via-wf", "wf-out");
+        // Host budget 1; workflow also budget 1 — single agent should succeed.
+        let host = Arc::new(
+            InProcessHost::new(sampler, Vec::new())
+                .with_agent_budget(1)
+                .with_max_spawn_depth(Some(8)),
+        );
+        let host_trait: Arc<dyn SessionHost> = host.clone();
+        let script = r#"
+            let meta = #{ name: "iso", description: "i" };
+            let a = agent("via-wf", #{ label: "w" });
+            complete(#{ a: a });
+        "#;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let outcome = run_workflow_on_host(
+            host_trait,
+            WorkflowRunParams {
+                script: script.into(),
+                args: json!({}),
+                journal: Journal::new(None),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(1),
+        )
+        .await
+        .expect("wf");
+        assert!(matches!(outcome, WorkflowOutcome::Completed { .. }));
+        assert_eq!(host.agents_spent(), 1);
+
+        // Second direct spawn should hit host budget.
+        let err = host
+            .spawn_agent(SpawnOpts::new("extra"))
+            .await
+            .expect_err("host budget");
+        assert_eq!(err.code(), ErrorCode::HostBudget);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ab_fork_context_requires_messages() {
+        let sampler = Arc::new(MockSampler::new());
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        let err = host
+            .spawn_agent(SpawnOpts::new("x").with_fork_context(true))
+            .await
+            .expect_err("unsupported without messages");
+        assert_eq!(err.code(), ErrorCode::HostUnsupported);
+        let _ = HostError::Unsupported("fork".into());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_registry_and_fork_messages_e2e() {
+        use machi::{AgentDefinition, AgentRegistry, Instructions, Message, ToolPolicy};
+
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("continue", "forked");
+        let def = AgentDefinition {
+            name: "worker".into(),
+            description: String::new(),
+            instructions: Instructions::Static("focus".into()),
+            model: "mock".into(),
+            tools: ToolPolicy::InheritAll,
+            output_schema: None,
+            completion: None,
+            max_steps: 4,
+        };
+        let reg = AgentRegistry::from_definitions([def]);
+        let host = InProcessHost::new(sampler, Vec::new()).with_agent_registry(reg);
+        let parent = vec![Message::user("history"), Message::assistant("ok")];
+        let run = host
+            .spawn_agent(
+                SpawnOpts::new("continue")
+                    .with_agent_type("worker")
+                    .with_fork_messages(parent),
+            )
+            .await
+            .expect("spawn");
+        assert_eq!(run.output.as_str(), Some("forked"));
     }
 }

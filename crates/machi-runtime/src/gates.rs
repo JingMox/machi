@@ -42,8 +42,7 @@ impl StopGate for CompletionToolGate {
         state: &dyn ConversationState,
         retries_used: u32,
     ) -> GateDecision {
-        completion_gate(&self.requirement, state, retries_used)
-            .unwrap_or(GateDecision::Complete)
+        completion_gate(&self.requirement, state, retries_used).unwrap_or(GateDecision::Complete)
     }
 }
 
@@ -211,5 +210,59 @@ mod tests {
             chain.evaluate(&agent, &state, 0),
             GateDecision::Continue { .. }
         ));
+    }
+
+    #[test]
+    fn max_retries_then_complete_without_tool() {
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .completion(CompletionRequirement {
+                tool: "submit".into(),
+                reminder: "call submit".into(),
+                max_retries: 2,
+            })
+            .build()
+            .expect("agent");
+        let state = VecConversationState::from_messages(vec![Message::user("hi")]);
+        assert!(matches!(
+            evaluate_stop_gates(&agent, &state, 0),
+            GateDecision::Continue { .. }
+        ));
+        assert!(matches!(
+            evaluate_stop_gates(&agent, &state, 1),
+            GateDecision::Continue { .. }
+        ));
+        // Exhausted: complete anyway (fail-open after budgeted reminders).
+        assert_eq!(
+            evaluate_stop_gates(&agent, &state, 2),
+            GateDecision::Complete
+        );
+    }
+
+    #[test]
+    fn custom_gate_in_chain_first_continue_wins() {
+        struct AlwaysContinue;
+        impl StopGate for AlwaysContinue {
+            fn evaluate(
+                &self,
+                _agent: &Agent,
+                _state: &dyn ConversationState,
+                _retries_used: u32,
+            ) -> GateDecision {
+                GateDecision::Continue {
+                    reminder: "again".into(),
+                }
+            }
+        }
+
+        let agent = AgentBuilder::named("a").model("mock").build().expect("a");
+        let chain = GateChain::new().push(AlwaysContinue);
+        let state = VecConversationState::new();
+        assert_eq!(
+            chain.evaluate(&agent, &state, 0),
+            GateDecision::Continue {
+                reminder: "again".into()
+            }
+        );
     }
 }

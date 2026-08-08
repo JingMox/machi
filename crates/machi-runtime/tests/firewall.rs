@@ -12,27 +12,15 @@ use std::path::PathBuf;
 #[test]
 fn workflow_cargo_toml_has_no_llm_or_http() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workflow = root
-        .join("..")
-        .join("machi-workflow")
-        .join("Cargo.toml");
+    let workflow = root.join("..").join("machi-workflow").join("Cargo.toml");
     let text = fs::read_to_string(&workflow).expect("read workflow Cargo.toml");
-    for forbidden in [
-        "machi-llm",
-        "machi-runtime",
-        "reqwest",
-        "hyper",
-        "ureq",
-    ] {
+    for forbidden in ["machi-llm", "machi-runtime", "reqwest", "hyper", "ureq"] {
         assert!(
             !text.contains(forbidden),
             "machi-workflow must not depend on {forbidden}"
         );
     }
-    assert!(
-        text.contains("rhai"),
-        "machi-workflow should use rhai"
-    );
+    assert!(text.contains("rhai"), "machi-workflow should use rhai");
 }
 
 #[test]

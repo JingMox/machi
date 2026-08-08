@@ -18,26 +18,26 @@ pub mod state;
 pub mod turn;
 pub mod workflow_host;
 
-pub use gates::{
-    CompletionToolGate, GateChain, GateDecision, StopGate, evaluate_stop_gates,
+pub use gates::{CompletionToolGate, GateChain, GateDecision, StopGate, evaluate_stop_gates};
+pub use host::{
+    AgentRunResult, DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, InProcessHost,
+    SessionHost, SpawnOpts,
 };
-pub use host::{AgentRunResult, InProcessHost, SessionHost, SpawnOpts};
+pub use metrics::{
+    METRIC_COMPACTIONS_TOTAL, METRIC_SAMPLE_DURATION_MS, METRIC_SPAWNS_TOTAL, METRIC_TOKENS_TOTAL,
+    METRIC_TOOL_CALLS_TOTAL, METRIC_TOOL_DURATION_MS, METRIC_TURN_DURATION_MS, METRIC_TURN_STEPS,
+    METRIC_TURNS_TOTAL, METRIC_WORKFLOW_AGENTS_TOTAL, METRIC_WORKFLOW_RUNS_TOTAL, MetricsSink,
+    NoopMetrics, SharedMetrics, record_compaction, record_sample, record_spawn, record_tool_call,
+    record_turn, record_workflow_agents, record_workflow_run, required_metric_names,
+};
 pub use schema::{
     STRUCTURED_OUTPUT_MAX_RETRIES, compile_schema, schema_retry_reminder,
     validate_structured_output,
 };
-pub use metrics::{
-    METRIC_COMPACTIONS_TOTAL, METRIC_SAMPLE_DURATION_MS, METRIC_SPAWNS_TOTAL,
-    METRIC_TOKENS_TOTAL, METRIC_TOOL_CALLS_TOTAL, METRIC_TOOL_DURATION_MS, METRIC_TURNS_TOTAL,
-    METRIC_TURN_DURATION_MS, METRIC_TURN_STEPS, METRIC_WORKFLOW_AGENTS_TOTAL,
-    METRIC_WORKFLOW_RUNS_TOTAL, MetricsSink, NoopMetrics, SharedMetrics, record_compaction,
-    record_sample, record_spawn, record_tool_call, record_turn, record_workflow_agents,
-    record_workflow_run, required_metric_names,
-};
 pub use session::Session;
 pub use side_effects::WorkflowSideEffects;
 // re-export compaction strategy surface used by hosts
-pub use machi_compaction::{CompactionOutcome, CompactionStrategy, MaxMessages};
+pub use machi_compaction::{CompactionOutcome, CompactionStrategy, MaxMessages, TokenThreshold};
 pub use spawn_tool::SpawnAgentTool;
 pub use state::{ConversationState, VecConversationState};
 pub use turn::{TurnInput, TurnOptions, TurnOutcome, TurnRuntime};
