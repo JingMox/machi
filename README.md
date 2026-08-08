@@ -5,16 +5,32 @@
 [![Crates.io](https://img.shields.io/crates/v/machi.svg)](https://crates.io/crates/machi)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
-**Enterprise embeddable agent runtime kernel** for Rust (v1 clean break).
+**Embeddable multi-agent runtime kernel** for Rust (v1 clean break).
 
-Layers: agent **definition** → **tools** → **turn runtime** → **session host**
-(nested agents) → **journaled Rhai workflow** (no LLM dependency in the engine).
+**Not** API-compatible with Machi ≤0.8. **Not** a full Grok product clone
+(no TUI/shell); targets the agent/runtime/workflow kernel surface.
 
-This line is **not** API-compatible with Machi ≤0.8 (`Runner`, etc.).
+### Architecture (shipped crates)
 
-- [Kernel architecture](docs/architecture/kernel.md)
-- [Production standards](docs/architecture/production.md)
-- [Quality gates](docs/architecture/BASELINE.md)
+```
+types → protocol / obs
+     → tools → toolkit (feature)
+     → llm / agent / state / compaction
+     → workflow (no LLM)
+     → runtime (turn, session, host, workflow adapter)
+     → machi facade
+```
+
+**Canonical vertical slice:** Session/handle → TurnRuntime → tools(+toolkit) →
+approval/gates/compaction → metrics → spawn and/or journaled workflow
+(scratch/template). Optional: `git_diff_since` (set git cwd), HTTP providers.
+
+**Not shipped:** hooks crate, long-term memory crate, derive macros, OTEL SDK,
+MCP. Do not treat README feature lists as production-complete systems.
+
+**State model:** `VecConversationState` = turn buffer; `ChatStateHandle` =
+session source of truth; `FilePersistence`/`MemoryPersistence` via
+`Session::run_turn_on_handle_checkpointed`.
 
 ### Single-agent turn
 
@@ -58,25 +74,44 @@ cargo run -p machi --example workflow_resume
 
 `machi-workflow` has no dependency on LLM HTTP clients.
 
-### Providers (feature-gated)
+### Providers / toolkit (feature-gated)
 
-| Feature | Sampler |
-|---------|---------|
-| (default) | `MockSampler` offline |
+| Feature | Contents |
+|---------|----------|
+| (default) | `MockSampler` offline + runtime + workflow |
 | `openai` | `OpenAiCompatSampler` — Chat Completions HTTP |
 | `ollama` | `OllamaSampler` — `/api/chat` HTTP |
-| `full` | runtime + workflow + openai + ollama |
+| `toolkit` | cwd-jailed `ReadFile` / `WriteFile` / `Grep` / `Shell` |
+| `state` | `ChatStateHandle` actor + usage ledger + persistence ports |
+| `compaction` | `MaxMessages` strategy crate (also used by runtime) |
+| `obs` | `machi-obs` metrics catalogue + redaction helpers |
+| `full` | runtime + workflow + toolkit + state + compaction + obs + providers |
 
 Wire helpers `build_chat_completions_body` / `parse_chat_completions_response`
 are always available for testing without enabling HTTP.
 
-Built-in non-spawn tool: `CalcTool` (arithmetic) for demos and integration tests.
+Built-in demo tool: `CalcTool` (arithmetic). Toolkit: `default_toolkit(jail)`.
+
+Agents: load Markdown definitions via `parse_definition_markdown` /
+`discover_project` (`.machi/agents/*.md`). Session: `run_turn_on_handle` syncs
+to `ChatStateHandle`. LLM: `LlmSampler::sample_stream` (+ mock default).
+
+Workflow core: `validate_script`, `write_scratch` / `read_scratch` /
+`render_template` (journaled). Optional: `git_diff_since` after
+`WorkflowSideEffects::set_git_cwd`. Metrics: inject `SharedMetrics`;
+`RecordingMetrics` / `PrometheusRecorder` for capture/export.
 
 ### Quality
 
 ```bash
 cargo test --workspace --all-features
-cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
+cargo +nightly clippy --workspace \
+  --fix \
+  --all-targets \
+  --all-features \
+  --allow-dirty \
+  --allow-staged \
+  -- -D warnings
 ```
 
 ## License

@@ -48,6 +48,10 @@ pub enum ToolPolicy {
 }
 
 /// Require a tool call before the turn may complete.
+///
+/// Enforced by [`machi_runtime::TurnRuntime`] via stop gates: when the model
+/// returns a final message without having called `tool`, a reminder is injected
+/// and sampling continues (up to `max_retries`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequirement {
     /// Canonical tool name that must be called.

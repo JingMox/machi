@@ -1,16 +1,30 @@
-//! Machi — enterprise embeddable agent runtime kernel.
+//! Machi — embeddable multi-agent runtime kernel (v1 clean break).
 //!
-//! # Layers
+//! # Layers (implemented)
 //!
-//! - **types** — messages, ids, usage, errors
-//! - **tools** — tool trait, registry, concurrent dispatch
-//! - **llm** — [`LlmSampler`](machi_llm::LlmSampler) + [`MockSampler`](machi_llm::MockSampler)
-//! - **agent** — definition / builder / instance
-//! - **runtime** — [`TurnRuntime`](machi_runtime::TurnRuntime), [`SessionHost`](machi_runtime::SessionHost)
-//! - **workflow** — journaled Rhai orchestration (no LLM dependency)
+//! | Crate | Role |
+//! |-------|------|
+//! | `machi-types` | ids, messages, usage, errors |
+//! | `machi-protocol` | tool id, content blocks, span catalogue |
+//! | `machi-obs` | metrics sink, redact, recording / prometheus text |
+//! | `machi-tools` | `DynTool`, stream, dispatch, approval |
+//! | `machi-toolkit` | cwd-jailed fs/shell tools (feature) |
+//! | `machi-llm` | sampler + mock / openai / ollama |
+//! | `machi-agent` | definition, builder, discovery |
+//! | `machi-state` | conversation handle, ledger, persistence |
+//! | `machi-compaction` | compaction strategies |
+//! | `machi-runtime` | turn, session, host, workflow adapter |
+//! | `machi-workflow` | Rhai engine, journal, validate (no LLM) |
 //!
-//! This is a **clean break** from Machi ≤0.8 (`Runner`, etc.). See
-//! `docs/architecture/kernel.md`.
+//! # Vertical slice (canonical product path)
+//!
+//! Session / handle → `TurnRuntime` → tools(+toolkit) → approval / stop gates →
+//! metrics → `SessionHost` spawn and/or journaled workflow (+ scratch/template).
+//!
+//! **Not implemented yet (do not assume):** hooks crate, long-term memory crate,
+//! proc-macro derive, full OTEL SDK export, MCP.
+//!
+//! Optional host capabilities (e.g. `git_diff_since`) require explicit setup.
 
 #![forbid(unsafe_code)]
 // Feature-gated transitive deps are unused when compiling the facade lib alone.
@@ -23,7 +37,9 @@
 pub use machi_agent as agent;
 #[cfg(feature = "runtime")]
 pub use machi_agent::{
-    Agent, AgentBuilder, AgentDefinition, CompletionRequirement, Instructions, ToolPolicy,
+    Agent, AgentBuilder, AgentDefinition, CompletionRequirement, Instructions, PROJECT_AGENTS_DIR,
+    ToolPolicy, by_name, by_name_in_dir, discover_in_dir, discover_project, load_file,
+    parse_definition_markdown,
 };
 #[cfg(feature = "runtime")]
 pub use machi_llm as llm;
@@ -31,28 +47,40 @@ pub use machi_llm as llm;
 pub use machi_llm::OpenAiCompatSampler;
 #[cfg(feature = "runtime")]
 pub use machi_llm::{
-    LlmSampler, MockSampler, OpenAiCompatConfig, SampleRequest, SampleResponse, ToolChoice,
-    build_chat_completions_body, parse_chat_completions_response,
+    LlmSampler, MockSampler, OpenAiCompatConfig, SampleEvent, SampleRequest, SampleResponse,
+    SampleStream, ToolChoice, build_chat_completions_body, parse_chat_completions_response,
+    response_to_stream,
 };
 #[cfg(feature = "ollama")]
 pub use machi_llm::{OllamaConfig, OllamaSampler};
 #[cfg(feature = "runtime")]
 pub use machi_runtime as runtime;
 #[cfg(all(feature = "runtime", feature = "workflow"))]
-pub use machi_runtime::run_workflow_on_host;
+pub use machi_runtime::{
+    WorkflowSideEffects, run_workflow_configured, run_workflow_on_host,
+    run_workflow_on_host_with_metrics,
+};
 #[cfg(feature = "runtime")]
 pub use machi_runtime::{
-    AgentRunResult, ConversationState, InProcessHost, MetricsSink, NoopMetrics, Session,
-    SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, TurnInput, TurnOptions, TurnOutcome,
-    TurnRuntime, VecConversationState,
+    AgentRunResult, CompactionOutcome, CompactionStrategy, CompletionToolGate, ConversationState,
+    GateChain, GateDecision, InProcessHost, MaxMessages, MetricsSink, NoopMetrics, Session,
+    SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, StopGate, TurnInput, TurnOptions,
+    TurnOutcome, TurnRuntime, VecConversationState, evaluate_stop_gates,
 };
 #[cfg(feature = "runtime")]
 pub use machi_tools as tools;
 #[cfg(feature = "runtime")]
 pub use machi_tools::{
-    CalcTool, CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchRequest,
-    DynTool, InterruptBehavior, SharedTool, ToolCallContext, ToolDefinition, ToolDispatch,
-    ToolError, ToolMetadata, ToolRegistry, ToolResult,
+    AlwaysDeny, ApprovalDecision, ApprovalGate, ApprovalPolicy, AutoApprove, CalcTool,
+    CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchOutcome,
+    DispatchRequest, DynTool, InterruptBehavior, SharedTool, ToolCallContext, ToolDefinition,
+    ToolDispatch, ToolError, ToolMetadata, ToolProgress, ToolRegistry, ToolResult, ToolStream,
+    ToolStreamItem, drain_terminal, terminal_only, with_progress,
+};
+pub use machi_protocol as protocol;
+pub use machi_protocol::{
+    ContentBlock, ImageBlock, SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL,
+    SPAN_TOOL_BATCH, SPAN_TURN, SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId,
 };
 pub use machi_types as types;
 pub use machi_types::{
@@ -60,11 +88,36 @@ pub use machi_types::{
     Message, PromptTokensDetails, Result, RetryClass, Role, RunId, SessionId, ToolCall, ToolCallId,
     Usage, WorkflowRunId,
 };
+#[cfg(feature = "toolkit")]
+pub use machi_toolkit as toolkit;
+#[cfg(feature = "toolkit")]
+pub use machi_toolkit::{
+    GlobTool, GrepTool, ReadFileTool, ShellTool, WriteFileTool, default_toolkit, glob_match,
+    resolve_jailed,
+};
+#[cfg(feature = "state")]
+pub use machi_state as state;
+#[cfg(feature = "state")]
+pub use machi_state::{
+    ChatPersistence, ChatStateHandle, ChatStateSnapshot, FilePersistence, MemoryPersistence,
+    NullPersistence, UsageLedger, check_tool_pairing, messages_only,
+};
+#[cfg(feature = "compaction")]
+pub use machi_compaction as compaction;
+#[cfg(feature = "obs")]
+pub use machi_obs as obs;
+#[cfg(feature = "obs")]
+pub use machi_obs::{
+    PrometheusRecorder, REDACTED, RecordingMetrics, looks_like_secret_key, redact_key_value,
+    redact_map, required_span_names,
+};
 #[cfg(feature = "workflow")]
 pub use machi_workflow as workflow;
 #[cfg(feature = "workflow")]
 pub use machi_workflow::{
     AgentOpts, AgentResult as WorkflowAgentResult, BudgetState, DEFAULT_AGENT_BUDGET, HostError,
-    Journal, JournalEntry, JournalError, MAX_AGENT_BUDGET, PauseKind, WorkflowHostRequest,
-    WorkflowMeta, WorkflowOutcome, WorkflowRunParams, extract_meta, run_workflow,
+    Journal, JournalEntry, JournalError, MAX_AGENT_BUDGET, PauseKind, ValidationError,
+    ValidationReport, WorkflowHostRequest, WorkflowMeta, WorkflowOutcome, WorkflowRunParams,
+    default_probe_args, extract_meta, run_workflow, validate_script,
+    validate_script_with_agent_budget,
 };

@@ -13,17 +13,26 @@ categories = ["api-bindings", "asynchronous"]
 default = ["runtime", "workflow"]
 runtime = ["dep:machi-runtime", "dep:machi-agent", "dep:machi-llm", "dep:machi-tools"]
 workflow = ["dep:machi-workflow"]
+toolkit = ["runtime", "dep:machi-toolkit"]
+state = ["dep:machi-state"]
+compaction = ["dep:machi-compaction"]
+obs = ["dep:machi-obs"]
 openai = ["runtime", "machi-llm/openai"]
 ollama = ["runtime", "machi-llm/ollama"]
-full = ["runtime", "workflow", "openai", "ollama"]
+full = ["runtime", "workflow", "toolkit", "state", "compaction", "obs", "openai", "ollama"]
 
 [dependencies]
 machi-types = { workspace = true }
+machi-protocol = { workspace = true }
 machi-tools = { workspace = true, optional = true }
 machi-llm = { workspace = true, optional = true }
 machi-agent = { workspace = true, optional = true }
 machi-runtime = { workspace = true, optional = true }
 machi-workflow = { workspace = true, optional = true }
+machi-toolkit = { workspace = true, optional = true }
+machi-state = { workspace = true, optional = true }
+machi-compaction = { workspace = true, optional = true }
+machi-obs = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

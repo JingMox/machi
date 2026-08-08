@@ -7,8 +7,13 @@
 
 pub mod builder;
 pub mod definition;
+pub mod discovery;
 pub mod instance;
 
 pub use builder::AgentBuilder;
 pub use definition::{AgentDefinition, CompletionRequirement, Instructions, ToolPolicy};
+pub use discovery::{
+    PROJECT_AGENTS_DIR, by_name, by_name_in_dir, discover_in_dir, discover_project, load_file,
+    parse_definition_markdown,
+};
 pub use instance::Agent;

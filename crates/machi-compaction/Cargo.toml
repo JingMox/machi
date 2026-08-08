@@ -1,0 +1,15 @@
+[package]
+name = "machi-compaction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Conversation compaction strategies for the Machi kernel"
+keywords = ["ai", "agent", "compaction"]
+categories = ["algorithms"]
+
+[dependencies]
+machi-types = { workspace = true }
+
+[lints]
+workspace = true

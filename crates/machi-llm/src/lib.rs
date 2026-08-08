@@ -10,6 +10,7 @@ pub mod mock;
 pub mod openai_compat;
 pub mod sample;
 pub mod sampler;
+pub mod stream;
 
 #[cfg(feature = "ollama")]
 pub mod ollama;
@@ -23,4 +24,5 @@ pub use openai_compat::{
     OpenAiCompatConfig, build_chat_completions_body, parse_chat_completions_response,
 };
 pub use sample::{SampleRequest, SampleResponse, ToolChoice};
-pub use sampler::LlmSampler;
+pub use sampler::{LlmSampler, response_to_stream};
+pub use stream::{SampleEvent, SampleStream};

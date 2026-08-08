@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use machi_obs::{NoopMetrics, SharedMetrics, record_workflow_agents, record_workflow_run};
 use machi_tools::registry::CapabilityMode;
 use machi_workflow::{
     AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest, WorkflowOutcome,
@@ -13,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span};
 
 use crate::host::{SessionHost, SpawnOpts};
+use crate::side_effects::WorkflowSideEffects;
 
 /// Run a workflow script whose `agent` / `parallel` calls resolve through `host`.
 ///
@@ -26,8 +28,44 @@ use crate::host::{SessionHost, SpawnOpts};
 /// `Failed` / `BudgetExceeded` variants) rather than `Err`.
 pub async fn run_workflow_on_host(
     host: Arc<dyn SessionHost>,
+    params: WorkflowRunParams,
+    agent_budget: Option<u64>,
+) -> Result<WorkflowOutcome, HostError> {
+    run_workflow_on_host_with_metrics(host, params, agent_budget, Arc::new(NoopMetrics)).await
+}
+
+/// Like [`run_workflow_on_host`] with an explicit metrics sink.
+///
+/// # Errors
+///
+/// Same as [`run_workflow_on_host`].
+pub async fn run_workflow_on_host_with_metrics(
+    host: Arc<dyn SessionHost>,
+    params: WorkflowRunParams,
+    agent_budget: Option<u64>,
+    metrics: SharedMetrics,
+) -> Result<WorkflowOutcome, HostError> {
+    run_workflow_configured(
+        host,
+        params,
+        agent_budget,
+        metrics,
+        WorkflowSideEffects::shared(),
+    )
+    .await
+}
+
+/// Full configuration: metrics + side-effect store (scratch / templates).
+///
+/// # Errors
+///
+/// Same as [`run_workflow_on_host`].
+pub async fn run_workflow_configured(
+    host: Arc<dyn SessionHost>,
     mut params: WorkflowRunParams,
     agent_budget: Option<u64>,
+    metrics: SharedMetrics,
+    effects: Arc<WorkflowSideEffects>,
 ) -> Result<WorkflowOutcome, HostError> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowHostRequest>();
     let spent = Arc::new(AtomicU64::new(0));
@@ -39,6 +77,7 @@ pub async fn run_workflow_on_host(
     let reserved_h = Arc::clone(&reserved);
     let cancel_h = cancel.clone();
     let host_svc = Arc::clone(&host);
+    let effects_svc = Arc::clone(&effects);
 
     let service = tokio::spawn(async move {
         let mut inflight = Vec::new();
@@ -61,12 +100,11 @@ pub async fn run_workflow_on_host(
                 }
                 other => {
                     dispatch_inline(
-                        host_svc.as_ref(),
                         other,
                         budget,
                         &spent_h,
                         &reserved_h,
-                        &cancel_h,
+                        effects_svc.as_ref(),
                     );
                 }
             }
@@ -83,7 +121,22 @@ pub async fn run_workflow_on_host(
 
     // Dropping the sender (inside run_workflow when it finishes) ends the service loop.
     let _ = service.await;
+
+    let spent_n = spent.load(Ordering::Relaxed);
+    record_workflow_agents(metrics.as_ref(), spent_n);
+    record_workflow_run(metrics.as_ref(), outcome_label(&outcome));
     Ok(outcome)
+}
+
+fn outcome_label(outcome: &WorkflowOutcome) -> &'static str {
+    match outcome {
+        WorkflowOutcome::Completed { .. } => "completed",
+        WorkflowOutcome::Paused { .. } => "paused",
+        WorkflowOutcome::BudgetExceeded { .. } => "budget_exceeded",
+        WorkflowOutcome::Cancelled => "cancelled",
+        WorkflowOutcome::Failed { .. } => "failed",
+        _ => "other",
+    }
 }
 
 async fn handle_spawn(
@@ -138,12 +191,11 @@ async fn handle_spawn(
 }
 
 fn dispatch_inline(
-    _host: &dyn SessionHost,
     req: WorkflowHostRequest,
     budget: Option<u64>,
     spent: &AtomicU64,
     reserved: &AtomicU64,
-    _cancel: &CancellationToken,
+    effects: &WorkflowSideEffects,
 ) {
     match req {
         WorkflowHostRequest::ReserveAgentCalls { count, reply } => {
@@ -177,6 +229,29 @@ fn dispatch_inline(
         }
         WorkflowHostRequest::Log { message, replayed } => {
             tracing::info!(target: "machi.workflow", %message, replayed, "log");
+        }
+        WorkflowHostRequest::Telemetry {
+            name,
+            fields,
+            replayed,
+        } => {
+            tracing::info!(target: "machi.workflow", %name, %fields, replayed, "telemetry");
+        }
+        WorkflowHostRequest::RenderTemplate { reply, name, vars } => {
+            let _ = reply.send(effects.render_template(&name, &vars));
+        }
+        WorkflowHostRequest::WriteScratchFile {
+            reply,
+            name,
+            content,
+        } => {
+            let _ = reply.send(effects.write_scratch(&name, content));
+        }
+        WorkflowHostRequest::ReadScratchFile { reply, name } => {
+            let _ = reply.send(effects.read_scratch(&name));
+        }
+        WorkflowHostRequest::GitDiffSince { reply, commit } => {
+            let _ = reply.send(effects.git_diff_since(&commit));
         }
     }
 }
@@ -248,7 +323,15 @@ fn reply_cancelled(req: WorkflowHostRequest) {
         WorkflowHostRequest::BudgetQuery { reply } => {
             let _ = reply.send(Err(HostError::Cancelled));
         }
-        WorkflowHostRequest::Phase { .. } | WorkflowHostRequest::Log { .. } => {}
+        WorkflowHostRequest::RenderTemplate { reply, .. }
+        | WorkflowHostRequest::WriteScratchFile { reply, .. }
+        | WorkflowHostRequest::ReadScratchFile { reply, .. }
+        | WorkflowHostRequest::GitDiffSince { reply, .. } => {
+            let _ = reply.send(Err(HostError::Cancelled));
+        }
+        WorkflowHostRequest::Phase { .. }
+        | WorkflowHostRequest::Log { .. }
+        | WorkflowHostRequest::Telemetry { .. } => {}
     }
 }
 

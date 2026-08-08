@@ -44,4 +44,16 @@ pub mod codes {
     pub fn denied(msg: impl Into<String>) -> MachiError {
         MachiError::new(ErrorCode::ToolDenied, msg)
     }
+
+    /// Approval gate rejected the call.
+    #[must_use]
+    pub fn approval_denied(msg: impl Into<String>) -> MachiError {
+        MachiError::new(ErrorCode::ToolApprovalDenied, msg)
+    }
+
+    /// Stream protocol violation.
+    #[must_use]
+    pub fn stream_protocol(msg: impl Into<String>) -> MachiError {
+        MachiError::new(ErrorCode::ToolStreamProtocol, msg)
+    }
 }

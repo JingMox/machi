@@ -1,5 +1,6 @@
 //! Conversation state abstractions.
 
+use machi_compaction::max_messages::compact_max_messages;
 use machi_types::Message;
 
 /// Mutable conversation backing a turn or session.
@@ -8,6 +9,8 @@ pub trait ConversationState: Send {
     fn messages(&self) -> &[Message];
     /// Append a message.
     fn append(&mut self, message: Message);
+    /// Replace the entire message list (compaction / restore).
+    fn replace(&mut self, messages: Vec<Message>);
     /// Rough token estimate for compaction triggers (bytes/4 heuristic by default).
     fn token_estimate(&self) -> u64 {
         self.messages()
@@ -35,6 +38,13 @@ impl VecConversationState {
     pub fn from_messages(messages: Vec<Message>) -> Self {
         Self { messages }
     }
+
+    /// Drop oldest non-system messages until `max_messages` remains.
+    ///
+    /// Delegates to [`machi_compaction::max_messages::compact_max_messages`].
+    pub fn compact_max_messages(&mut self, max_messages: usize) {
+        self.messages = compact_max_messages(std::mem::take(&mut self.messages), max_messages);
+    }
 }
 
 impl ConversationState for VecConversationState {
@@ -44,5 +54,32 @@ impl ConversationState for VecConversationState {
 
     fn append(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    fn replace(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use machi_types::Message;
+
+    #[test]
+    fn max_messages_keeps_system_and_tail() {
+        let mut state = VecConversationState::from_messages(vec![
+            Message::system("sys"),
+            Message::user("1"),
+            Message::user("2"),
+            Message::user("3"),
+            Message::user("4"),
+        ]);
+        state.compact_max_messages(3);
+        let msgs = state.messages();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs.first().map(Message::text).as_deref(), Some("sys"));
+        assert_eq!(msgs.get(1).map(Message::text).as_deref(), Some("3"));
+        assert_eq!(msgs.get(2).map(Message::text).as_deref(), Some("4"));
     }
 }

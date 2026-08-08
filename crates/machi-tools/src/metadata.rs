@@ -122,6 +122,18 @@ impl ToolMetadata {
         }
     }
 
+    /// Exclusive shell / process execution defaults.
+    #[must_use]
+    pub fn shell_execute(timeout: Duration) -> Self {
+        Self {
+            concurrency: ConcurrencyMode::Exclusive,
+            destructiveness: Destructiveness::Reversible,
+            interrupt: InterruptBehavior::Cancel,
+            timeout: Some(timeout),
+            capabilities: vec![CapabilityFlag::Execute, CapabilityFlag::Write],
+        }
+    }
+
     /// True when the tool is admissible under a read-only capability mode.
     #[must_use]
     pub fn allowed_in_read_only(&self) -> bool {

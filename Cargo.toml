@@ -16,19 +16,26 @@ categories = ["api-bindings", "asynchronous"]
 [workspace.dependencies]
 machi = { version = "1.0.0", path = "crates/machi" }
 machi-types = { version = "1.0.0", path = "crates/machi-types" }
+machi-protocol = { version = "1.0.0", path = "crates/machi-protocol" }
 machi-tools = { version = "1.0.0", path = "crates/machi-tools" }
 machi-llm = { version = "1.0.0", path = "crates/machi-llm" }
 machi-agent = { version = "1.0.0", path = "crates/machi-agent" }
 machi-runtime = { version = "1.0.0", path = "crates/machi-runtime" }
 machi-workflow = { version = "1.0.0", path = "crates/machi-workflow" }
+machi-toolkit = { version = "1.0.0", path = "crates/machi-toolkit" }
+machi-state = { version = "1.0.0", path = "crates/machi-state" }
+machi-compaction = { version = "1.0.0", path = "crates/machi-compaction" }
+machi-obs = { version = "1.0.0", path = "crates/machi-obs" }
 
 async-trait = "0.1.89"
 futures = "0.3.32"
+jsonschema = { version = "0.28", default-features = false }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
 rhai = { version = "1.22", default-features = false, features = ["std", "sync", "serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10"
+tempfile = "3"
 thiserror = "2.0.18"
 tokio = { version = "1.51.0", default-features = false, features = ["sync", "macros", "rt", "time", "rt-multi-thread", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }

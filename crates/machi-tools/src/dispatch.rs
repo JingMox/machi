@@ -1,16 +1,20 @@
-//! Concurrent tool dispatch with exclusivity rules.
+//! Concurrent tool dispatch with exclusivity, capability, and approval gates.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::future::join_all;
+use machi_obs::{NoopMetrics, SharedMetrics, record_tool_call};
 use machi_types::{ToolCall, ToolCallId};
 use tokio::time::timeout;
 use tracing::{Instrument, info_span};
 
+use crate::approval::{ApprovalDecision, ApprovalGate, AutoApprove};
 use crate::context::ToolCallContext;
 use crate::error::{ToolError, codes};
-use crate::metadata::ConcurrencyMode;
+use crate::metadata::{ConcurrencyMode, Destructiveness, ToolMetadata};
 use crate::registry::{CapabilityMode, ToolRegistry};
+use crate::stream::drain_terminal;
 use crate::tool::{DynTool, SharedTool, ToolResult};
 
 /// One tool call to execute.
@@ -31,13 +35,42 @@ pub struct DispatchOutcome {
     pub result: Result<ToolResult, ToolError>,
 }
 
+/// When to consult the approval gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ApprovalPolicy {
+    /// Never consult (tests / fully trusted offline runs).
+    Never,
+    /// Consult when tool is mutating or executes (default production policy).
+    #[default]
+    Destructive,
+    /// Consult every tool call.
+    Always,
+}
+
 /// Scheduler for tool batches.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub struct ToolDispatch {
     /// Maximum concurrent non-exclusive tools.
     pub max_concurrency: usize,
     /// Capability filter applied before execution.
     pub capability_mode: CapabilityMode,
+    /// Host approval gate.
+    pub approval: Arc<dyn ApprovalGate>,
+    /// When to invoke approval.
+    pub approval_policy: ApprovalPolicy,
+    /// Metrics sink (default no-op).
+    pub metrics: SharedMetrics,
+}
+
+impl std::fmt::Debug for ToolDispatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolDispatch")
+            .field("max_concurrency", &self.max_concurrency)
+            .field("capability_mode", &self.capability_mode)
+            .field("approval_policy", &self.approval_policy)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ToolDispatch {
@@ -45,11 +78,49 @@ impl Default for ToolDispatch {
         Self {
             max_concurrency: 32,
             capability_mode: CapabilityMode::Full,
+            approval: Arc::new(AutoApprove),
+            approval_policy: ApprovalPolicy::Destructive,
+            metrics: Arc::new(NoopMetrics),
         }
     }
 }
 
 impl ToolDispatch {
+    /// Builder: capability mode.
+    #[must_use]
+    pub fn with_capability(mut self, mode: CapabilityMode) -> Self {
+        self.capability_mode = mode;
+        self
+    }
+
+    /// Builder: max concurrency.
+    #[must_use]
+    pub const fn with_max_concurrency(mut self, n: usize) -> Self {
+        self.max_concurrency = n;
+        self
+    }
+
+    /// Builder: approval gate.
+    #[must_use]
+    pub fn with_approval(mut self, gate: Arc<dyn ApprovalGate>) -> Self {
+        self.approval = gate;
+        self
+    }
+
+    /// Builder: approval policy.
+    #[must_use]
+    pub const fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Self {
+        self.approval_policy = policy;
+        self
+    }
+
+    /// Builder: metrics sink.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: SharedMetrics) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
     /// Execute a batch preserving input order in the output vector.
     pub async fn execute_batch(
         &self,
@@ -77,52 +148,56 @@ impl ToolDispatch {
 
             match prepare_call(registry, self.capability_mode, req) {
                 Prepare::Deny(out) | Prepare::Missing(out) => {
-                    if let Some(slot) = outcomes.get_mut(index) {
-                        *slot = Some(out);
-                    }
+                    set_outcome(&mut outcomes, index, out);
                     index = index.saturating_add(1);
                 }
-                Prepare::Ready(tool) => {
-                    let meta = tool.metadata();
-                    if meta.concurrency == ConcurrencyMode::Exclusive {
-                        let out = self.run_one(tool.as_ref(), ctx.clone(), req).await;
-                        if let Some(slot) = outcomes.get_mut(index) {
-                            *slot = Some(out);
-                        }
-                        index = index.saturating_add(1);
-                        continue;
-                    }
-
-                    let window = collect_concurrent_window(
-                        registry,
-                        self.capability_mode,
-                        &requests,
-                        index,
-                        self.max_concurrency.max(1),
-                    );
-                    let next = window.last().map_or(index + 1, |i| i.saturating_add(1));
-                    let futs = window.into_iter().filter_map(|win_i| {
-                        let win_req = requests.get(win_i)?.clone();
-                        let win_tool = registry.require(&win_req.call.name).ok()?;
-                        let win_ctx = ctx.clone();
-                        Some(async move {
-                            (
-                                win_i,
-                                self.run_one(win_tool.as_ref(), win_ctx, &win_req).await,
-                            )
-                        })
-                    });
-                    for (i, out) in join_all(futs).await {
-                        if let Some(slot) = outcomes.get_mut(i) {
-                            *slot = Some(out);
-                        }
-                    }
-                    index = next;
+                Prepare::Ready(tool) if tool.metadata().concurrency == ConcurrencyMode::Exclusive => {
+                    let out = self.run_one(tool.as_ref(), ctx.clone(), req).await;
+                    set_outcome(&mut outcomes, index, out);
+                    index = index.saturating_add(1);
+                }
+                Prepare::Ready(_) => {
+                    index = self
+                        .run_concurrent_window(registry, &ctx, &requests, &mut outcomes, index)
+                        .await;
                 }
             }
         }
 
         finalize_outcomes(&requests, outcomes)
+    }
+
+    async fn run_concurrent_window(
+        &self,
+        registry: &ToolRegistry,
+        ctx: &ToolCallContext,
+        requests: &[DispatchRequest],
+        outcomes: &mut [Option<DispatchOutcome>],
+        index: usize,
+    ) -> usize {
+        let window = collect_concurrent_window(
+            registry,
+            self.capability_mode,
+            requests,
+            index,
+            self.max_concurrency.max(1),
+        );
+        let next = window.last().map_or(index + 1, |i| i.saturating_add(1));
+        let futs = window.into_iter().filter_map(|win_i| {
+            let win_req = requests.get(win_i)?.clone();
+            let win_tool = registry.require(&win_req.call.name).ok()?;
+            let win_ctx = ctx.clone();
+            Some(async move {
+                (
+                    win_i,
+                    self.run_one(win_tool.as_ref(), win_ctx, &win_req).await,
+                )
+            })
+        });
+        for (i, out) in join_all(futs).await {
+            set_outcome(outcomes, i, out);
+        }
+        next
     }
 
     async fn run_one(
@@ -137,29 +212,94 @@ impl ToolDispatch {
             machi.tool_call_id = %req.call.id,
         );
         let meta = tool.metadata();
-        let fut = tool.call(ctx.clone(), req.call.arguments.clone());
-        let result = async {
-            if ctx.is_cancelled() {
-                return Err(codes::cancelled());
-            }
-            let limit = meta
-                .timeout
-                .or_else(|| ctx.deadline.map(|d| d.remaining()).filter(|d| !d.is_zero()));
-            match limit {
-                Some(limit) => match timeout(limit.max(Duration::from_millis(1)), fut).await {
-                    Ok(r) => r,
-                    Err(_) => Err(codes::timeout(format!("tool '{}' timed out", tool.name()))),
-                },
-                None => fut.await,
-            }
-        }
-        .instrument(span)
-        .await;
+        let started = Instant::now();
+        let result = async { self.execute_tool(tool, &meta, ctx, req).await }
+            .instrument(span)
+            .await;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let status = match &result {
+            Ok(r) if r.is_error => "tool_error",
+            Ok(_) => "ok",
+            Err(e) if e.code() == machi_types::ErrorCode::ToolCancelled => "cancelled",
+            Err(e) if e.code() == machi_types::ErrorCode::ToolApprovalDenied => "denied",
+            Err(_) => "error",
+        };
+        record_tool_call(self.metrics.as_ref(), tool.name(), status, ms);
 
         DispatchOutcome {
             id: req.call.id.clone(),
             name: req.call.name.clone(),
             result,
+        }
+    }
+
+    async fn execute_tool(
+        &self,
+        tool: &dyn DynTool,
+        meta: &ToolMetadata,
+        ctx: ToolCallContext,
+        req: &DispatchRequest,
+    ) -> Result<ToolResult, ToolError> {
+        if ctx.is_cancelled() {
+            return Err(codes::cancelled());
+        }
+        self.check_approval(tool, meta, &req.call.arguments).await?;
+        let fut = async {
+            let stream = tool
+                .execute(ctx.clone(), req.call.arguments.clone())
+                .await;
+            drain_terminal(stream).await
+        };
+        let limit = meta
+            .timeout
+            .or_else(|| ctx.deadline.map(|d| d.remaining()).filter(|d| !d.is_zero()));
+        match limit {
+            Some(limit) => match timeout(limit.max(Duration::from_millis(1)), fut).await {
+                Ok(r) => r,
+                Err(_) => Err(codes::timeout(format!("tool '{}' timed out", tool.name()))),
+            },
+            None => fut.await,
+        }
+    }
+
+    async fn check_approval(
+        &self,
+        tool: &dyn DynTool,
+        meta: &ToolMetadata,
+        arguments: &serde_json::Value,
+    ) -> Result<(), ToolError> {
+        if !needs_approval(self.approval_policy, meta) {
+            return Ok(());
+        }
+        match self.approval.approve(tool, meta, arguments).await? {
+            ApprovalDecision::Allow => Ok(()),
+            ApprovalDecision::Deny => Err(codes::approval_denied(format!(
+                "approval denied for tool {}",
+                tool.name()
+            ))),
+        }
+    }
+}
+
+fn set_outcome(outcomes: &mut [Option<DispatchOutcome>], index: usize, out: DispatchOutcome) {
+    if let Some(slot) = outcomes.get_mut(index) {
+        *slot = Some(out);
+    }
+}
+
+fn needs_approval(policy: ApprovalPolicy, meta: &ToolMetadata) -> bool {
+    match policy {
+        ApprovalPolicy::Never => false,
+        ApprovalPolicy::Always => true,
+        ApprovalPolicy::Destructive => {
+            meta.destructiveness != Destructiveness::None
+                || meta.capabilities.iter().any(|c| {
+                    matches!(
+                        c,
+                        crate::metadata::CapabilityFlag::Write
+                            | crate::metadata::CapabilityFlag::Execute
+                    )
+                })
         }
     }
 }
@@ -266,6 +406,7 @@ mod tests {
     use tokio::sync::Barrier;
 
     use super::*;
+    use crate::approval::AlwaysDeny;
     use crate::metadata::{ConcurrencyMode, ToolMetadata};
     use crate::tool::DynTool;
 
@@ -398,10 +539,7 @@ mod tests {
             barrier: None,
         });
         let reg = ToolRegistry::from_tools(vec![tool]);
-        let dispatch = ToolDispatch {
-            capability_mode: CapabilityMode::ReadOnly,
-            ..ToolDispatch::default()
-        };
+        let dispatch = ToolDispatch::default().with_capability(CapabilityMode::ReadOnly);
         let outs = dispatch
             .execute_batch(&reg, ToolCallContext::default(), vec![call("w", "c1")])
             .await;
@@ -412,5 +550,28 @@ mod tests {
             .as_ref()
             .expect_err("denied");
         assert_eq!(err.code(), ErrorCode::ToolDenied);
+    }
+
+    #[tokio::test]
+    async fn approval_blocks_destructive() {
+        let tool = Arc::new(CountingTool {
+            name: "w".into(),
+            meta: ToolMetadata::exclusive_write(),
+            active: Arc::new(AtomicUsize::new(0)),
+            max_active: Arc::new(AtomicUsize::new(0)),
+            barrier: None,
+        });
+        let reg = ToolRegistry::from_tools(vec![tool]);
+        let dispatch = ToolDispatch::default().with_approval(Arc::new(AlwaysDeny));
+        let outs = dispatch
+            .execute_batch(&reg, ToolCallContext::default(), vec![call("w", "c1")])
+            .await;
+        let err = outs
+            .first()
+            .expect("one")
+            .result
+            .as_ref()
+            .expect_err("approval");
+        assert_eq!(err.code(), ErrorCode::ToolApprovalDenied);
     }
 }

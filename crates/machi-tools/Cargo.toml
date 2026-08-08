@@ -11,6 +11,7 @@ categories = ["asynchronous"]
 [dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }
+machi-obs = { workspace = true }
 machi-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

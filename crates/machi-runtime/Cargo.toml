@@ -11,8 +11,12 @@ categories = ["asynchronous"]
 [dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }
+jsonschema = { workspace = true }
 machi-agent = { workspace = true }
+machi-compaction = { workspace = true }
 machi-llm = { workspace = true }
+machi-obs = { workspace = true }
+machi-state = { workspace = true }
 machi-tools = { workspace = true }
 machi-types = { workspace = true }
 machi-workflow = { workspace = true }
@@ -22,6 +26,9 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+machi-toolkit = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]

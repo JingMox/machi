@@ -126,6 +126,13 @@ pub fn run_workflow(params: WorkflowRunParams) -> WorkflowOutcome {
 }
 
 fn register_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
+    register_agent_fns(engine, ctx);
+    register_notify_fns(engine, ctx);
+    register_io_fns(engine, ctx);
+    register_control_fns(engine);
+}
+
+fn register_agent_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     let c = Arc::clone(ctx);
     engine.register_fn("agent", move |prompt: &str| -> ScriptResult<Dynamic> {
         spawn_agent(
@@ -154,31 +161,113 @@ fn register_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
         "parallel",
         move |items: rhai::Array| -> ScriptResult<rhai::Array> { spawn_agents_parallel(&c, items) },
     );
+}
 
+fn register_notify_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     let c = Arc::clone(ctx);
     engine.register_fn("phase", move |title: &str| {
-        let (tx, replaying) = {
-            let ctx = c.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (ctx.host_tx.clone(), ctx.journal.covers(ctx.seq))
-        };
-        let _ = tx.send(WorkflowHostRequest::Phase {
+        fire_notify(&c, |replayed| WorkflowHostRequest::Phase {
             title: title.to_owned(),
-            replayed: replaying,
+            replayed,
         });
     });
 
     let c = Arc::clone(ctx);
     engine.register_fn("log", move |message: &str| {
-        let (tx, replaying) = {
-            let ctx = c.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (ctx.host_tx.clone(), ctx.journal.covers(ctx.seq))
-        };
-        let _ = tx.send(WorkflowHostRequest::Log {
+        fire_notify(&c, |replayed| WorkflowHostRequest::Log {
             message: message.to_owned(),
-            replayed: replaying,
+            replayed,
         });
     });
 
+    let c = Arc::clone(ctx);
+    engine.register_fn("telemetry", move |name: &str, fields: Dynamic| {
+        fire_notify(&c, |replayed| WorkflowHostRequest::Telemetry {
+            name: name.to_owned(),
+            fields: dynamic_to_value(fields),
+            replayed,
+        });
+    });
+}
+
+fn fire_notify(ctx: &Arc<Mutex<Ctx>>, make: impl FnOnce(bool) -> WorkflowHostRequest) {
+    let (tx, replaying) = {
+        let g = ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (g.host_tx.clone(), g.journal.covers(g.seq))
+    };
+    let _ = tx.send(make(replaying));
+}
+
+fn register_io_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
+    let c = Arc::clone(ctx);
+    engine.register_fn(
+        "write_scratch",
+        move |name: &str, content: &str| -> ScriptResult<String> {
+            host_string_call(
+                &c,
+                "write_scratch_file",
+                serde_json::json!({ "name": name, "content": content }),
+                |reply| WorkflowHostRequest::WriteScratchFile {
+                    name: name.to_owned(),
+                    content: content.to_owned(),
+                    reply,
+                },
+            )
+        },
+    );
+
+    let c = Arc::clone(ctx);
+    engine.register_fn("read_scratch", move |name: &str| -> ScriptResult<String> {
+        host_string_call(
+            &c,
+            "read_scratch_file",
+            serde_json::json!({ "name": name }),
+            |reply| WorkflowHostRequest::ReadScratchFile {
+                name: name.to_owned(),
+                reply,
+            },
+        )
+    });
+
+    let c = Arc::clone(ctx);
+    engine.register_fn(
+        "render_template",
+        move |name: &str, vars: Dynamic| -> ScriptResult<String> {
+            let vars_v = dynamic_to_value(vars);
+            let name_owned = name.to_owned();
+            host_string_call(
+                &c,
+                "render_template",
+                serde_json::json!({ "name": name_owned, "vars": vars_v }),
+                move |reply| WorkflowHostRequest::RenderTemplate {
+                    name: name_owned,
+                    vars: vars_v,
+                    reply,
+                },
+            )
+        },
+    );
+
+    let c = Arc::clone(ctx);
+    engine.register_fn(
+        "git_diff_since",
+        move |commit: &str| -> ScriptResult<String> {
+            host_string_call(
+                &c,
+                "git_diff_since",
+                serde_json::json!({ "commit": commit }),
+                |reply| WorkflowHostRequest::GitDiffSince {
+                    commit: commit.to_owned(),
+                    reply,
+                },
+            )
+        },
+    );
+}
+
+fn register_control_fns(engine: &mut Engine) {
     engine.register_fn("complete", |value: Dynamic| -> ScriptResult<()> {
         Err(terminated(ControlToken::Complete(dynamic_to_value(value))))
     });
@@ -201,7 +290,7 @@ fn register_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
 enum ParallelSlot {
     Replayed(serde_json::Value),
     Pending {
-        opts: AgentOpts,
+        opts: Box<AgentOpts>,
         seq: u64,
         hash: String,
     },
@@ -253,7 +342,11 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
             pending.push(ParallelSlot::Replayed(value));
         } else {
             live_count = live_count.saturating_add(1);
-            pending.push(ParallelSlot::Pending { opts, seq, hash });
+            pending.push(ParallelSlot::Pending {
+                opts: Box::new(opts),
+                seq,
+                hash,
+            });
         }
     }
 
@@ -272,7 +365,7 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     g.host_tx
                         .send(WorkflowHostRequest::SpawnAgent {
-                            opts,
+                            opts: *opts,
                             reply: reply_tx,
                         })
                         .map_err(|_| {
@@ -395,6 +488,74 @@ fn spawn_agent(ctx: &Arc<Mutex<Ctx>>, opts: AgentOpts) -> ScriptResult<Dynamic> 
             .map_err(journal_fatal)?;
     }
     value_to_dynamic(&value)
+}
+
+/// Journaled host RPC returning a string (scratch / template / …).
+fn host_string_call<F>(
+    ctx: &Arc<Mutex<Ctx>>,
+    kind: &str,
+    payload: serde_json::Value,
+    make_req: F,
+) -> ScriptResult<String>
+where
+    F: FnOnce(oneshot::Sender<Result<String, HostError>>) -> WorkflowHostRequest,
+{
+    let hash = request_hash(kind, &payload);
+    let seq = {
+        let mut g = ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.next_seq()?
+    };
+
+    {
+        let g = ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(recorded) = g.journal.replay(seq, kind, &hash).map_err(journal_fatal)? {
+            return Ok(recorded
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| recorded.to_string()));
+        }
+    }
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    {
+        let g = ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.host_tx
+            .send(make_req(reply_tx))
+            .map_err(|_| terminated(ControlToken::Fatal("workflow host channel closed".into())))?;
+    }
+
+    let reply = reply_rx
+        .blocking_recv()
+        .map_err(|_| terminated(ControlToken::Fatal("workflow host dropped reply".into())))?;
+
+    let value = match reply {
+        Ok(s) => s,
+        Err(HostError::Cancelled) => return Err(terminated(ControlToken::Cancelled)),
+        Err(HostError::BudgetExceeded | HostError::AgentCallQuotaExceeded { .. }) => {
+            return Err(terminated(ControlToken::Budget(
+                "workflow agent budget exceeded".into(),
+            )));
+        }
+        Err(HostError::Unsupported(msg) | HostError::Failed(msg)) => {
+            return Err(runtime_error(msg));
+        }
+    };
+
+    {
+        let mut g = ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.journal
+            .record(seq, kind, hash, serde_json::Value::String(value.clone()))
+            .map_err(journal_fatal)?;
+    }
+    Ok(value)
 }
 
 fn reserve_one(ctx: &Arc<Mutex<Ctx>>) -> ScriptResult<()> {
@@ -534,7 +695,9 @@ mod tests {
                             duration_ms: 1,
                         }));
                     }
-                    WorkflowHostRequest::Phase { .. } | WorkflowHostRequest::Log { .. } => {}
+                    WorkflowHostRequest::Phase { .. }
+                    | WorkflowHostRequest::Log { .. }
+                    | WorkflowHostRequest::Telemetry { .. } => {}
                     WorkflowHostRequest::BudgetQuery { reply } => {
                         let spent = spent2.load(Ordering::SeqCst);
                         let _ = reply.send(Ok(crate::host::BudgetState {
@@ -543,6 +706,14 @@ mod tests {
                             reserved,
                             remaining: Some(budget.saturating_sub(spent + reserved)),
                         }));
+                    }
+                    WorkflowHostRequest::RenderTemplate { reply, .. }
+                    | WorkflowHostRequest::WriteScratchFile { reply, .. }
+                    | WorkflowHostRequest::ReadScratchFile { reply, .. }
+                    | WorkflowHostRequest::GitDiffSince { reply, .. } => {
+                        let _ = reply.send(Err(HostError::Unsupported(
+                            "not implemented in test host".into(),
+                        )));
                     }
                 }
             }

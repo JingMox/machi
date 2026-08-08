@@ -17,6 +17,7 @@ ollama = ["dep:reqwest", "dep:tracing"]
 
 [dependencies]
 async-trait = { workspace = true }
+futures = { workspace = true }
 machi-tools = { workspace = true }
 machi-types = { workspace = true }
 reqwest = { workspace = true, optional = true }

@@ -24,6 +24,18 @@ pub struct AgentOpts {
     /// Optional phase tag for UI.
     #[serde(default)]
     pub phase: Option<String>,
+    /// Optional agent type / definition name for host resolution.
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    /// When true, host may fork parent conversation context into the child.
+    #[serde(default)]
+    pub fork_context: bool,
+    /// Resume a prior nested agent run id when the host supports it.
+    #[serde(default)]
+    pub resume_from: Option<String>,
+    /// Max output tokens hint for the child sample.
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
 }
 
 /// Result returned from a host agent spawn.
@@ -119,10 +131,51 @@ pub enum WorkflowHostRequest {
         /// True when replaying.
         replayed: bool,
     },
+    /// Structured telemetry event (optional host support).
+    Telemetry {
+        /// Event name.
+        name: String,
+        /// Arbitrary fields.
+        fields: serde_json::Value,
+        /// True when replaying.
+        replayed: bool,
+    },
     /// Budget query.
     BudgetQuery {
         /// Reply channel.
         reply: oneshot::Sender<Result<BudgetState, HostError>>,
+    },
+    /// Render a named template (optional).
+    RenderTemplate {
+        /// Template name.
+        name: String,
+        /// Template variables.
+        vars: serde_json::Value,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<String, HostError>>,
+    },
+    /// Write a scratch file in the host run workspace (optional).
+    WriteScratchFile {
+        /// Scratch file name.
+        name: String,
+        /// File content.
+        content: String,
+        /// Reply channel (resolved path or id).
+        reply: oneshot::Sender<Result<String, HostError>>,
+    },
+    /// Read a scratch file (optional).
+    ReadScratchFile {
+        /// Scratch file name.
+        name: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<String, HostError>>,
+    },
+    /// Git diff since a commit (optional).
+    GitDiffSince {
+        /// Commit-ish.
+        commit: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<String, HostError>>,
     },
 }
 
@@ -136,7 +189,12 @@ impl WorkflowHostRequest {
             Self::SpawnAgent { .. } => "spawn_agent",
             Self::Phase { .. } => "phase",
             Self::Log { .. } => "log",
+            Self::Telemetry { .. } => "telemetry",
             Self::BudgetQuery { .. } => "budget",
+            Self::RenderTemplate { .. } => "render_template",
+            Self::WriteScratchFile { .. } => "write_scratch_file",
+            Self::ReadScratchFile { .. } => "read_scratch_file",
+            Self::GitDiffSince { .. } => "git_diff_since",
         }
     }
 }

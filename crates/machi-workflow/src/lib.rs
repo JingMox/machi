@@ -16,12 +16,17 @@ pub mod host;
 pub mod journal;
 pub mod meta;
 pub mod run;
+pub mod validate;
 
 pub use engine::{WorkflowRunParams, run_workflow};
 pub use host::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
 pub use journal::{Journal, JournalEntry, JournalError};
 pub use meta::{MetaError, WorkflowMeta, extract_meta};
 pub use run::{PauseKind, WorkflowOutcome};
+pub use validate::{
+    ValidationError, ValidationReport, default_probe_args, validate_script,
+    validate_script_with_agent_budget,
+};
 
 /// Default cumulative agent-call budget.
 pub const DEFAULT_AGENT_BUDGET: u64 = 128;

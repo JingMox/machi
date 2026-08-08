@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use futures::future::try_join_all;
 use machi_agent::{Agent, AgentBuilder};
 use machi_llm::LlmSampler;
+use machi_obs::{NoopMetrics, SharedMetrics, record_spawn};
 use machi_tools::SharedTool;
 use machi_tools::registry::CapabilityMode;
 use machi_types::{AgentId, ErrorCode, MachiError, Usage};
@@ -120,6 +121,7 @@ pub struct InProcessHost {
     /// Absolute cap on nested agent spawns (`None` = unlimited).
     agent_budget: Option<u64>,
     spent: AtomicU64,
+    metrics: SharedMetrics,
 }
 
 impl std::fmt::Debug for InProcessHost {
@@ -145,6 +147,7 @@ impl InProcessHost {
             runtime: TurnRuntime::new(),
             agent_budget: None,
             spent: AtomicU64::new(0),
+            metrics: Arc::new(NoopMetrics),
         }
     }
 
@@ -152,6 +155,13 @@ impl InProcessHost {
     #[must_use]
     pub const fn with_agent_budget(mut self, budget: u64) -> Self {
         self.agent_budget = Some(budget);
+        self
+    }
+
+    /// Metrics sink for spawn/turn accounting.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: SharedMetrics) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -243,6 +253,7 @@ impl InProcessHost {
                 capability_mode: opts.capability_mode,
                 cancel: opts.cancel.clone(),
                 agent_id: Some(agent_id.clone()),
+                metrics: Arc::clone(&self.metrics),
                 ..TurnOptions::default()
             };
             let outcome = self
@@ -256,6 +267,7 @@ impl InProcessHost {
                 )
                 .await
                 .map_err(|e| {
+                    record_spawn(self.metrics.as_ref(), "error");
                     if matches!(
                         e.code(),
                         ErrorCode::RuntimeCancelled | ErrorCode::LlmCancelled
@@ -266,6 +278,14 @@ impl InProcessHost {
                         MachiError::new(ErrorCode::HostSpawn, e.message().to_owned()).with_source(e)
                     }
                 })?;
+            record_spawn(
+                self.metrics.as_ref(),
+                if outcome.cancelled {
+                    "cancelled"
+                } else {
+                    "ok"
+                },
+            );
 
             let output = outcome
                 .output_json

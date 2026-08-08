@@ -1,4 +1,7 @@
 //! Structured errors and stable error codes.
+//!
+//! Control planes must branch on [`ErrorCode`] / [`RetryClass`], never on
+//! substring matching of [`Display`](std::fmt::Display) output.
 
 use std::fmt;
 use std::sync::Arc;
@@ -6,16 +9,21 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 /// Machine-stable error code for control-plane handling.
+///
+/// Codes use dotted `domain.reason` strings via [`ErrorCode::as_str`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ErrorCode {
+    // --- types ---
     /// Invalid or empty identifier.
     TypesInvalidId,
     /// Message or payload failed validation.
     TypesValidation,
     /// Serialization failure.
     TypesSerde,
+
+    // --- tool ---
     /// Tool not found in registry.
     ToolNotFound,
     /// Tool arguments failed schema/parse.
@@ -28,22 +36,44 @@ pub enum ErrorCode {
     ToolCancelled,
     /// Tool denied by policy/capability.
     ToolDenied,
+    /// Tool call rejected by approval gate.
+    ToolApprovalDenied,
+    /// Tool stream ended without a terminal item (protocol violation).
+    ToolStreamProtocol,
+
+    // --- llm ---
     /// LLM transport or provider failure.
     LlmProvider,
     /// LLM request cancelled.
     LlmCancelled,
     /// LLM response invalid.
     LlmInvalidResponse,
+    /// LLM authentication / authorization failure.
+    LlmAuth,
+    /// LLM rate limited.
+    LlmRateLimit,
+
+    // --- agent ---
     /// Agent definition invalid.
     AgentInvalidDefinition,
     /// Agent build failure.
     AgentBuild,
+    /// Agent type / definition not found for resolution.
+    AgentNotFound,
+
+    // --- runtime / turn ---
     /// Turn hit max steps.
     RuntimeMaxSteps,
     /// Turn cancelled.
     RuntimeCancelled,
     /// Runtime gate rejected the outcome.
     RuntimeGate,
+    /// Structured output failed schema validation after retries.
+    RuntimeStructuredOutput,
+    /// Turn deadline exceeded.
+    RuntimeDeadline,
+
+    // --- host ---
     /// Host spawn failed.
     HostSpawn,
     /// Agent budget exhausted.
@@ -52,6 +82,10 @@ pub enum ErrorCode {
     HostUnsupported,
     /// Host cancelled.
     HostCancelled,
+    /// Isolation backend failure.
+    HostIsolation,
+
+    // --- workflow ---
     /// Workflow script compile/runtime failure.
     WorkflowScript,
     /// Journal divergence on resume.
@@ -62,12 +96,27 @@ pub enum ErrorCode {
     WorkflowBudget,
     /// Workflow cancelled.
     WorkflowCancelled,
+    /// Workflow validation / probe failure.
+    WorkflowValidate,
+
+    // --- state / memory ---
+    /// Conversation state invariant violated (e.g. dangling tool call).
+    StateInvariant,
+    /// Persistence backend I/O failure.
+    StatePersistence,
+
+    // --- compaction ---
+    /// Compaction strategy failed.
+    CompactionFailed,
+    /// Context still exceeds limits after compaction.
+    CompactionOverflow,
+
     /// Generic internal failure.
     Internal,
 }
 
 impl ErrorCode {
-    /// Stable `snake_case` code string.
+    /// Stable `snake_case` dotted code string.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -80,24 +129,127 @@ impl ErrorCode {
             Self::ToolTimeout => "tool.timeout",
             Self::ToolCancelled => "tool.cancelled",
             Self::ToolDenied => "tool.denied",
+            Self::ToolApprovalDenied => "tool.approval_denied",
+            Self::ToolStreamProtocol => "tool.stream_protocol",
             Self::LlmProvider => "llm.provider",
             Self::LlmCancelled => "llm.cancelled",
             Self::LlmInvalidResponse => "llm.invalid_response",
+            Self::LlmAuth => "llm.auth",
+            Self::LlmRateLimit => "llm.rate_limit",
             Self::AgentInvalidDefinition => "agent.invalid_definition",
             Self::AgentBuild => "agent.build",
+            Self::AgentNotFound => "agent.not_found",
             Self::RuntimeMaxSteps => "runtime.max_steps",
             Self::RuntimeCancelled => "runtime.cancelled",
             Self::RuntimeGate => "runtime.gate",
+            Self::RuntimeStructuredOutput => "runtime.structured_output",
+            Self::RuntimeDeadline => "runtime.deadline",
             Self::HostSpawn => "host.spawn",
             Self::HostBudget => "host.budget",
             Self::HostUnsupported => "host.unsupported",
             Self::HostCancelled => "host.cancelled",
+            Self::HostIsolation => "host.isolation",
             Self::WorkflowScript => "workflow.script",
             Self::WorkflowDivergence => "workflow.divergence",
             Self::WorkflowJournal => "workflow.journal",
             Self::WorkflowBudget => "workflow.budget",
             Self::WorkflowCancelled => "workflow.cancelled",
+            Self::WorkflowValidate => "workflow.validate",
+            Self::StateInvariant => "state.invariant",
+            Self::StatePersistence => "state.persistence",
+            Self::CompactionFailed => "compaction.failed",
+            Self::CompactionOverflow => "compaction.overflow",
             Self::Internal => "internal",
+        }
+    }
+
+    /// Domain prefix (`types`, `tool`, `llm`, …).
+    #[must_use]
+    pub const fn domain(self) -> &'static str {
+        match self {
+            Self::TypesInvalidId | Self::TypesValidation | Self::TypesSerde => "types",
+            Self::ToolNotFound
+            | Self::ToolInvalidArgs
+            | Self::ToolExecution
+            | Self::ToolTimeout
+            | Self::ToolCancelled
+            | Self::ToolDenied
+            | Self::ToolApprovalDenied
+            | Self::ToolStreamProtocol => "tool",
+            Self::LlmProvider
+            | Self::LlmCancelled
+            | Self::LlmInvalidResponse
+            | Self::LlmAuth
+            | Self::LlmRateLimit => "llm",
+            Self::AgentInvalidDefinition | Self::AgentBuild | Self::AgentNotFound => "agent",
+            Self::RuntimeMaxSteps
+            | Self::RuntimeCancelled
+            | Self::RuntimeGate
+            | Self::RuntimeStructuredOutput
+            | Self::RuntimeDeadline => "runtime",
+            Self::HostSpawn
+            | Self::HostBudget
+            | Self::HostUnsupported
+            | Self::HostCancelled
+            | Self::HostIsolation => "host",
+            Self::WorkflowScript
+            | Self::WorkflowDivergence
+            | Self::WorkflowJournal
+            | Self::WorkflowBudget
+            | Self::WorkflowCancelled
+            | Self::WorkflowValidate => "workflow",
+            Self::StateInvariant | Self::StatePersistence => "state",
+            Self::CompactionFailed | Self::CompactionOverflow => "compaction",
+            Self::Internal => "internal",
+        }
+    }
+
+    /// Default retry classification for this code.
+    ///
+    /// Kernel paths set an explicit [`RetryClass`] when they know more; this
+    /// is the baseline hosts may consult.
+    #[must_use]
+    pub const fn default_retry(self) -> RetryClass {
+        match self {
+            Self::LlmRateLimit | Self::LlmProvider => RetryClass::Backoff,
+            Self::LlmAuth => RetryClass::AuthRefresh,
+            Self::ToolTimeout => RetryClass::Immediate,
+            Self::ToolCancelled
+            | Self::LlmCancelled
+            | Self::RuntimeCancelled
+            | Self::HostCancelled
+            | Self::WorkflowCancelled
+            | Self::ToolDenied
+            | Self::ToolApprovalDenied
+            | Self::ToolNotFound
+            | Self::ToolInvalidArgs
+            | Self::ToolStreamProtocol
+            | Self::TypesInvalidId
+            | Self::TypesValidation
+            | Self::TypesSerde
+            | Self::AgentInvalidDefinition
+            | Self::AgentBuild
+            | Self::AgentNotFound
+            | Self::RuntimeMaxSteps
+            | Self::RuntimeGate
+            | Self::RuntimeStructuredOutput
+            | Self::RuntimeDeadline
+            | Self::HostBudget
+            | Self::HostUnsupported
+            | Self::WorkflowDivergence
+            | Self::WorkflowBudget
+            | Self::WorkflowValidate
+            | Self::StateInvariant
+            | Self::CompactionOverflow
+            | Self::Internal => RetryClass::Never,
+            Self::ToolExecution
+            | Self::LlmInvalidResponse
+            | Self::HostSpawn
+            | Self::HostIsolation
+            | Self::WorkflowScript
+            | Self::WorkflowJournal
+            | Self::StatePersistence
+            | Self::CompactionFailed => RetryClass::Never,
         }
     }
 }
@@ -136,17 +288,19 @@ pub struct MachiError {
 
 impl MachiError {
     /// Create an error with code and message.
+    ///
+    /// Retry class defaults to [`ErrorCode::default_retry`].
     #[must_use]
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
-            retry: RetryClass::Never,
+            retry: code.default_retry(),
             source: None,
         }
     }
 
-    /// Attach retry classification.
+    /// Attach retry classification (overrides default).
     #[must_use]
     pub const fn with_retry(mut self, retry: RetryClass) -> Self {
         self.retry = retry;
@@ -177,6 +331,12 @@ impl MachiError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// Convenience: cancelled-style runtime error.
+    #[must_use]
+    pub fn cancelled(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::RuntimeCancelled, message)
+    }
 }
 
 impl fmt::Display for MachiError {
@@ -196,5 +356,42 @@ mod tests {
     fn display_includes_code() {
         let err = MachiError::new(ErrorCode::ToolTimeout, "exceeded 5s");
         assert!(err.to_string().contains("tool.timeout"), "{err}");
+        assert_eq!(err.retry_class(), RetryClass::Immediate);
+    }
+
+    #[test]
+    fn rate_limit_defaults_to_backoff() {
+        let err = MachiError::new(ErrorCode::LlmRateLimit, "429");
+        assert_eq!(err.retry_class(), RetryClass::Backoff);
+        assert_eq!(err.code().domain(), "llm");
+    }
+
+    #[test]
+    fn all_codes_have_domain_prefix_in_as_str() {
+        let codes = [
+            ErrorCode::TypesInvalidId,
+            ErrorCode::ToolApprovalDenied,
+            ErrorCode::ToolStreamProtocol,
+            ErrorCode::LlmAuth,
+            ErrorCode::LlmRateLimit,
+            ErrorCode::AgentNotFound,
+            ErrorCode::RuntimeStructuredOutput,
+            ErrorCode::RuntimeDeadline,
+            ErrorCode::HostIsolation,
+            ErrorCode::WorkflowValidate,
+            ErrorCode::StateInvariant,
+            ErrorCode::StatePersistence,
+            ErrorCode::CompactionFailed,
+            ErrorCode::CompactionOverflow,
+            ErrorCode::Internal,
+        ];
+        for code in codes {
+            let s = code.as_str();
+            assert!(
+                s.starts_with(code.domain()) || code == ErrorCode::Internal,
+                "code {s} should start with domain {}",
+                code.domain()
+            );
+        }
     }
 }

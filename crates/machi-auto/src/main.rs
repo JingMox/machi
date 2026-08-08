@@ -1,4 +1,4 @@
-//! Minimal demo: mock turn.
+//! Thin demo CLI: mock turn + dynamic multi-agent spawn.
 #![allow(
     clippy::print_stdout,
     clippy::expect_used,
@@ -8,10 +8,14 @@
 
 use std::sync::Arc;
 
-use machi::{AgentBuilder, MockSampler, TurnInput, TurnOptions, TurnRuntime, VecConversationState};
+use machi::{
+    AgentBuilder, InProcessHost, MockSampler, SessionHost, SpawnOpts, TurnInput, TurnOptions,
+    TurnRuntime, VecConversationState,
+};
 
 #[tokio::main]
 async fn main() {
+    // Single-agent turn
     let sampler = Arc::new(MockSampler::new());
     sampler.push_text("machi kernel ok");
     let agent = AgentBuilder::named("demo")
@@ -30,5 +34,23 @@ async fn main() {
         )
         .await
         .expect("turn");
-    println!("{}", out.output_text);
+    println!("turn: {}", out.output_text);
+
+    // Dynamic multi-agent
+    let multi = Arc::new(MockSampler::new());
+    multi.map_user_text("task-a", "A");
+    multi.map_user_text("task-b", "B");
+    let host = InProcessHost::new(multi, vec![]).with_agent_budget(4);
+    let results = host
+        .spawn_agents(vec![
+            SpawnOpts::new("task-a").with_label("a"),
+            SpawnOpts::new("task-b").with_label("b"),
+        ])
+        .await
+        .expect("spawn");
+    println!(
+        "spawn: {} workers spent={}",
+        results.len(),
+        host.agents_spent()
+    );
 }

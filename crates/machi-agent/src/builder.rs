@@ -5,7 +5,7 @@ use std::sync::Arc;
 use machi_tools::{SharedTool, ToolRegistry};
 use machi_types::{ErrorCode, MachiError};
 
-use crate::definition::{AgentDefinition, Instructions, ToolPolicy};
+use crate::definition::{AgentDefinition, CompletionRequirement, Instructions, ToolPolicy};
 use crate::instance::Agent;
 
 /// Builds a validated [`Agent`].
@@ -98,6 +98,24 @@ impl AgentBuilder {
     #[must_use]
     pub fn tools(mut self, tools: Vec<SharedTool>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    /// Require a named tool call before the turn may complete.
+    #[must_use]
+    pub fn completion(mut self, requirement: CompletionRequirement) -> Self {
+        if let Some(def) = &mut self.definition {
+            def.completion = Some(requirement);
+        }
+        self
+    }
+
+    /// Require structured JSON output matching a JSON Schema object.
+    #[must_use]
+    pub fn output_schema(mut self, schema: serde_json::Value) -> Self {
+        if let Some(def) = &mut self.definition {
+            def.output_schema = Some(schema);
+        }
         self
     }
 

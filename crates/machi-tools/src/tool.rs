@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::context::ToolCallContext;
 use crate::error::ToolError;
 use crate::metadata::ToolMetadata;
+use crate::stream::{ToolStream, terminal_only};
 
 /// JSON-schema facing tool definition for model APIs.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -86,8 +87,16 @@ pub trait DynTool: Send + Sync {
             parameters: self.parameters(),
         }
     }
-    /// Execute with JSON arguments.
+    /// Execute with JSON arguments (blocking convenience).
+    ///
+    /// Prefer overriding [`DynTool::execute`] when the tool emits progress.
     async fn call(&self, ctx: ToolCallContext, arguments: Value) -> Result<ToolResult, ToolError>;
+
+    /// Streaming entry point. Default wraps [`DynTool::call`] as a single terminal.
+    async fn execute(&self, ctx: ToolCallContext, arguments: Value) -> ToolStream {
+        let result = self.call(ctx, arguments).await;
+        terminal_only(result)
+    }
 }
 
 /// Shared tool handle.

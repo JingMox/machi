@@ -160,4 +160,43 @@ mod tests {
         assert_eq!(b.message.text(), "reply-b");
         assert_eq!(a.message.text(), "reply-a");
     }
+
+    #[tokio::test]
+    async fn sample_stream_emits_completed() {
+        use futures::StreamExt;
+
+        use crate::stream::SampleEvent;
+
+        let mock = MockSampler::new();
+        mock.push_text("streamed");
+        let req = SampleRequest {
+            model: "mock".into(),
+            messages: vec![Message::user("hi")],
+            tools: vec![],
+            tool_choice: ToolChoice::default(),
+            response_format: None,
+            max_output_tokens: None,
+            temperature: None,
+            cancel: CancellationToken::new(),
+            deadline: None,
+        };
+        let mut stream = mock.sample_stream(req).await.expect("stream");
+        let mut saw_text = false;
+        let mut saw_done = false;
+        while let Some(ev) = stream.next().await {
+            match ev {
+                SampleEvent::TextDelta { text } => {
+                    assert_eq!(text, "streamed");
+                    saw_text = true;
+                }
+                SampleEvent::Completed { message, .. } => {
+                    assert_eq!(message.text(), "streamed");
+                    saw_done = true;
+                }
+                SampleEvent::Usage(_) | SampleEvent::ToolCalls { .. } | SampleEvent::Failed { .. } => {
+                }
+            }
+        }
+        assert!(saw_text && saw_done);
+    }
 }
