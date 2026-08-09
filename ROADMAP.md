@@ -177,7 +177,7 @@ budget-release-then-resume-no-double-charge ×4, sentinel replay, torn-write rep
 divergence, oversized fanout, await_user resume, host-call cap. `dual_modes` grows
 matching A+B cases.
 
-### W2 — LLM supply layer production hardening (`machi-llm`)
+### W2 — LLM supply layer production hardening (`machi-llm`) ✅ (2026-08-09)
 
 Decorator stack; the `LlmSampler` trait itself does not change shape:
 

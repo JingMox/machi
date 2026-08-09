@@ -52,6 +52,14 @@ pub enum ErrorCode {
     LlmAuth,
     /// LLM rate limited.
     LlmRateLimit,
+    /// Alias-style rate limited code (same domain; prefer [`Self::LlmRateLimit`]).
+    LlmRateLimited,
+    /// Stream/sample idle timeout between chunks.
+    LlmIdleTimeout,
+    /// Provider returned an empty completion (no text / tool calls).
+    LlmEmptyResponse,
+    /// Output truncated (max tokens / length limit).
+    LlmTruncated,
 
     // --- agent ---
     /// Agent definition invalid.
@@ -140,6 +148,10 @@ impl ErrorCode {
             Self::LlmInvalidResponse => "llm.invalid_response",
             Self::LlmAuth => "llm.auth",
             Self::LlmRateLimit => "llm.rate_limit",
+            Self::LlmRateLimited => "llm.rate_limited",
+            Self::LlmIdleTimeout => "llm.idle_timeout",
+            Self::LlmEmptyResponse => "llm.empty_response",
+            Self::LlmTruncated => "llm.truncated",
             Self::AgentInvalidDefinition => "agent.invalid_definition",
             Self::AgentBuild => "agent.build",
             Self::AgentNotFound => "agent.not_found",
@@ -186,7 +198,11 @@ impl ErrorCode {
             | Self::LlmCancelled
             | Self::LlmInvalidResponse
             | Self::LlmAuth
-            | Self::LlmRateLimit => "llm",
+            | Self::LlmRateLimit
+            | Self::LlmRateLimited
+            | Self::LlmIdleTimeout
+            | Self::LlmEmptyResponse
+            | Self::LlmTruncated => "llm",
             Self::AgentInvalidDefinition | Self::AgentBuild | Self::AgentNotFound => "agent",
             Self::RuntimeMaxSteps
             | Self::RuntimeCancelled
@@ -219,11 +235,15 @@ impl ErrorCode {
     #[must_use]
     pub const fn default_retry(self) -> RetryClass {
         match self {
-            Self::LlmRateLimit | Self::LlmProvider => RetryClass::Backoff,
+            Self::LlmRateLimit | Self::LlmRateLimited | Self::LlmProvider | Self::LlmEmptyResponse => {
+                RetryClass::Backoff
+            }
             Self::LlmAuth => RetryClass::AuthRefresh,
             Self::ToolTimeout => RetryClass::Immediate,
             Self::ToolCancelled
             | Self::LlmCancelled
+            | Self::LlmIdleTimeout
+            | Self::LlmTruncated
             | Self::RuntimeCancelled
             | Self::HostCancelled
             | Self::WorkflowCancelled

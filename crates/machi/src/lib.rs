@@ -50,9 +50,13 @@ pub use machi_llm as llm;
 pub use machi_llm::OpenAiCompatSampler;
 #[cfg(feature = "runtime")]
 pub use machi_llm::{
-    LlmSampler, MockSampler, OpenAiCompatConfig, SampleEvent, SampleRequest, SampleResponse,
-    SampleStream, ToolChoice, build_chat_completions_body, parse_chat_completions_response,
-    response_to_stream,
+    Admission, BreakerConfig, BreakerOutcome, BreakerSampler, BreakerState, CircuitBreaker,
+    DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_ATTEMPTS, HttpRetryClass, LlmSampler, MAX_RETRY_AFTER,
+    MAX_RETRY_BACKOFF, MockSampler, OpenAiCompatConfig, RATE_LIMIT_RETRY_THRESHOLD, RetryContext,
+    RetryDecision, RetryPolicy, RetryingSampler, SampleEvent, SampleRequest, SampleResponse,
+    SampleStream, ToolChoice, backoff_for_attempt, build_chat_completions_body,
+    classify_http_status, decide_retry, error_code_for_http, is_empty_response,
+    parse_chat_completions_response, response_to_stream,
 };
 #[cfg(feature = "ollama")]
 pub use machi_llm::{OllamaConfig, OllamaSampler};

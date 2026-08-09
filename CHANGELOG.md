@@ -8,6 +8,14 @@ with the freeze policy in [`ROADMAP.md`](./ROADMAP.md) § 6.
 
 ## [Unreleased]
 
+### Added
+
+- **W2 LLM supply layer:** `RetryPolicy` / `RetryingSampler` (429 budget,
+  backoff+jitter, empty-response retry, stream idle timeout); `CircuitBreaker`
+  / `BreakerSampler`; `SampleEvent` variants (`ReasoningDelta`, `ToolCallDelta`,
+  `ResponseStarted`, `Retrying`); `Usage` cache/reasoning/api_duration fields;
+  `ErrorCode::{LlmRateLimited,LlmIdleTimeout,LlmEmptyResponse,LlmTruncated}`.
+
 ### Changed
 
 - **ROADMAP v2:** full rewrite around grok-build contract audit; W1–W6 phase
