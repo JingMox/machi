@@ -203,7 +203,7 @@ fn fire_notify(ctx: &Arc<Mutex<Ctx>>, make: impl FnOnce(bool) -> WorkflowHostReq
 fn register_io_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     let c = Arc::clone(ctx);
     engine.register_fn(
-        "write_scratch",
+        "write_scratch_file",
         move |name: &str, content: &str| -> ScriptResult<String> {
             host_string_call(
                 &c,
@@ -219,17 +219,20 @@ fn register_io_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     );
 
     let c = Arc::clone(ctx);
-    engine.register_fn("read_scratch", move |name: &str| -> ScriptResult<String> {
-        host_string_call(
-            &c,
-            "read_scratch_file",
-            serde_json::json!({ "name": name }),
-            |reply| WorkflowHostRequest::ReadScratchFile {
-                name: name.to_owned(),
-                reply,
-            },
-        )
-    });
+    engine.register_fn(
+        "read_scratch_file",
+        move |name: &str| -> ScriptResult<String> {
+            host_string_call(
+                &c,
+                "read_scratch_file",
+                serde_json::json!({ "name": name }),
+                |reply| WorkflowHostRequest::ReadScratchFile {
+                    name: name.to_owned(),
+                    reply,
+                },
+            )
+        },
+    );
 
     let c = Arc::clone(ctx);
     engine.register_fn(
@@ -265,11 +268,39 @@ fn register_io_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
             )
         },
     );
+
+    let c = Arc::clone(ctx);
+    engine.register_fn("budget", move || -> ScriptResult<Dynamic> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        {
+            let g = c.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.host_tx
+                .send(WorkflowHostRequest::BudgetQuery { reply: reply_tx })
+                .map_err(|_| {
+                    terminated(ControlToken::Fatal("workflow host channel closed".into()))
+                })?;
+        }
+        let state = reply_rx
+            .blocking_recv()
+            .map_err(|_| terminated(ControlToken::Fatal("workflow host dropped reply".into())))?
+            .map_err(|e| runtime_error(e.to_string()))?;
+        let value = serde_json::to_value(state).unwrap_or(serde_json::Value::Null);
+        value_to_dynamic(&value)
+    });
 }
 
 fn register_control_fns(engine: &mut Engine) {
+    engine.register_fn("json_encode", |value: Dynamic| -> ScriptResult<String> {
+        serde_json::to_string(&dynamic_to_value(value))
+            .map_err(|e| runtime_error(format!("json_encode failed: {e}")))
+    });
+
     engine.register_fn("complete", |value: Dynamic| -> ScriptResult<()> {
         Err(terminated(ControlToken::Complete(dynamic_to_value(value))))
+    });
+
+    engine.register_fn("complete", || -> ScriptResult<()> {
+        Err(terminated(ControlToken::Complete(serde_json::Value::Null)))
     });
 
     engine.register_fn("pause", |kind: &str, message: &str| -> ScriptResult<()> {
@@ -650,6 +681,13 @@ fn outcome_from_error(err: EvalAltResult) -> WorkflowOutcome {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::excessive_nesting,
+    reason = "unit tests use expect/panic for setup"
+)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -804,6 +842,101 @@ mod tests {
             0,
             "resume must not re-spawn agents"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn json_encode_and_scratch_surface() {
+        let (tx, host, _) = spawn_host(4);
+        // Override unsupported scratch replies: use a host that implements scratch.
+        drop(host);
+        drop(tx);
+        let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowHostRequest>();
+        let host = tokio::spawn(async move {
+            let mut spent = 0u64;
+            while let Some(req) = rx.recv().await {
+                match req {
+                    WorkflowHostRequest::ReserveAgentCalls { count, reply } => {
+                        let _ = reply.send(Ok(()));
+                        let _ = count;
+                    }
+                    WorkflowHostRequest::ReleaseAgentCalls { count, reply } => {
+                        let _ = reply.send(Ok(()));
+                        let _ = count;
+                    }
+                    WorkflowHostRequest::SpawnAgent { opts, reply } => {
+                        spent += 1;
+                        let _ = reply.send(Ok(AgentResult {
+                            agent_id: format!("a-{spent}"),
+                            success: true,
+                            output: serde_json::json!({"echo": opts.prompt}),
+                            cancelled: false,
+                            tokens_used: 1,
+                            duration_ms: 1,
+                        }));
+                    }
+                    WorkflowHostRequest::BudgetQuery { reply } => {
+                        let _ = reply.send(Ok(crate::host::BudgetState {
+                            total: Some(4),
+                            spent,
+                            reserved: 0,
+                            remaining: Some(4_u64.saturating_sub(spent)),
+                        }));
+                    }
+                    WorkflowHostRequest::WriteScratchFile {
+                        name,
+                        content,
+                        reply,
+                    } => {
+                        let _ = reply.send(Ok(format!("scratch/{name}:{content}")));
+                    }
+                    WorkflowHostRequest::ReadScratchFile { name, reply } => {
+                        let _ = reply.send(Ok(format!("read:{name}")));
+                    }
+                    WorkflowHostRequest::Phase { .. }
+                    | WorkflowHostRequest::Log { .. }
+                    | WorkflowHostRequest::Telemetry { .. } => {}
+                    WorkflowHostRequest::RenderTemplate { reply, .. }
+                    | WorkflowHostRequest::GitDiffSince { reply, .. } => {
+                        let _ = reply.send(Err(HostError::Unsupported("n/a".into())));
+                    }
+                }
+            }
+        });
+        let script = r#"
+            let meta = #{ name: "json", description: "encode" };
+            let enc = json_encode(#{ a: 1, b: "x" });
+            let path = write_scratch_file("n.txt", enc);
+            let b = budget();
+            complete(#{ enc: enc, path: path, remaining: b.remaining });
+        "#;
+        let outcome = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal: Journal::new(None),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host);
+        match outcome {
+            WorkflowOutcome::Completed { result } => {
+                let enc = result.get("enc").and_then(|v| v.as_str()).expect("enc");
+                assert!(enc.contains("\"a\":") || enc.contains("'a'"), "{enc}");
+                assert!(
+                    result
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .contains("n.txt"),
+                    "{result}"
+                );
+            }
+            other => panic!("expected completed: {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

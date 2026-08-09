@@ -119,11 +119,13 @@ impl AgentRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::definition::{Instructions, ToolPolicy};
     use std::fs;
     use std::io::Write;
+
     use tempfile::tempdir;
+
+    use super::*;
+    use crate::definition::{Instructions, ToolPolicy};
 
     fn def(name: &str) -> AgentDefinition {
         AgentDefinition {

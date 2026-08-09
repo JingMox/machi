@@ -109,4 +109,24 @@ impl ToolRegistry {
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
+
+    /// Merge another registry; `other` wins on name collision.
+    #[must_use]
+    pub fn merge(&self, other: &Self) -> Self {
+        let mut map = (*self.tools).clone();
+        for (k, v) in other.tools.iter() {
+            map.insert(k.clone(), Arc::clone(v));
+        }
+        Self {
+            tools: Arc::new(map),
+        }
+    }
+
+    /// Tool names (sorted).
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        let mut n: Vec<_> = self.tools.keys().cloned().collect();
+        n.sort_unstable();
+        n
+    }
 }

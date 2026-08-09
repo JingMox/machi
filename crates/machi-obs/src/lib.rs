@@ -15,6 +15,12 @@ pub mod prometheus;
 pub mod recording;
 pub mod redact;
 
+// Span contract lives in protocol so pure crates can name spans without pulling
+// metrics. Re-export for a single import path in hosts.
+pub use machi_protocol::observability::{
+    SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
+    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names, span_catalogue_snapshot,
+};
 pub use metrics::{
     METRIC_COMPACTIONS_TOTAL, METRIC_SAMPLE_DURATION_MS, METRIC_SPAWNS_TOTAL, METRIC_TOKENS_TOTAL,
     METRIC_TOOL_CALLS_TOTAL, METRIC_TOOL_DURATION_MS, METRIC_TURN_DURATION_MS, METRIC_TURN_STEPS,
@@ -26,10 +32,3 @@ pub use metrics::{
 pub use prometheus::PrometheusRecorder;
 pub use recording::{CounterEvent, GaugeEvent, HistogramEvent, RecordingMetrics};
 pub use redact::{REDACTED, looks_like_secret_key, redact_key_value, redact_map};
-
-// Span contract lives in protocol so pure crates can name spans without pulling
-// metrics. Re-export for a single import path in hosts.
-pub use machi_protocol::observability::{
-    SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
-    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names, span_catalogue_snapshot,
-};

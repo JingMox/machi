@@ -71,8 +71,9 @@ impl CompactionStrategy for TokenThreshold {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use machi_types::Message;
+
+    use super::*;
 
     #[test]
     fn triggers_on_token_estimate() {

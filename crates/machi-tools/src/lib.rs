@@ -9,6 +9,7 @@ pub mod dispatch;
 pub mod error;
 pub mod metadata;
 pub mod registry;
+pub mod source;
 pub mod stream;
 pub mod tool;
 
@@ -21,6 +22,7 @@ pub use metadata::{
     CapabilityFlag, ConcurrencyMode, Destructiveness, InterruptBehavior, ToolMetadata,
 };
 pub use registry::{CapabilityMode, ToolRegistry};
+pub use source::{StaticToolSource, ToolSource, merge_arc_sources, merge_tool_sources};
 pub use stream::{
     ToolProgress, ToolStream, ToolStreamItem, drain_terminal, drain_with_progress, terminal_only,
     with_progress,

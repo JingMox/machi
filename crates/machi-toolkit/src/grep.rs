@@ -213,8 +213,9 @@ async fn search_path(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn finds_literal() {

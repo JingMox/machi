@@ -21,5 +21,9 @@ tokio-util = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
+[[bench]]
+name = "journal"
+harness = false
+
 [lints]
 workspace = true

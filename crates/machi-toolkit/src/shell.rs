@@ -190,8 +190,9 @@ fn truncate_in_place(s: &mut String, max: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn echoes_in_jail() {

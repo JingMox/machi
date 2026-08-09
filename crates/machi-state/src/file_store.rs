@@ -104,10 +104,10 @@ impl ChatPersistence for FilePersistence {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use machi_types::Message;
     use tempfile::tempdir;
 
+    use super::*;
     use crate::ledger::UsageLedger;
     use crate::persistence::messages_only;
 

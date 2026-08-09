@@ -145,8 +145,9 @@ impl DynTool for WriteFileTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn writes_and_reads_back() {

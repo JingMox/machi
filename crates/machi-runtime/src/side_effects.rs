@@ -204,8 +204,9 @@ fn truncate_diff(text: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn scratch_round_trip() {

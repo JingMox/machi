@@ -339,8 +339,9 @@ fn unix_now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn memory_put_list_delete() {

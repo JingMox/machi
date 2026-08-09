@@ -9,6 +9,7 @@
 
 pub mod gates;
 pub mod host;
+pub mod isolation;
 pub mod metrics;
 pub mod schema;
 pub mod session;
@@ -23,6 +24,9 @@ pub use host::{
     AgentRunResult, DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, InProcessHost,
     SessionHost, SpawnOpts,
 };
+pub use isolation::{InProcessIsolation, IsolationBackend, IsolationEnv, isolation_error};
+// re-export compaction strategy surface used by hosts
+pub use machi_compaction::{CompactionOutcome, CompactionStrategy, MaxMessages, TokenThreshold};
 pub use metrics::{
     METRIC_COMPACTIONS_TOTAL, METRIC_SAMPLE_DURATION_MS, METRIC_SPAWNS_TOTAL, METRIC_TOKENS_TOTAL,
     METRIC_TOOL_CALLS_TOTAL, METRIC_TOOL_DURATION_MS, METRIC_TURN_DURATION_MS, METRIC_TURN_STEPS,
@@ -36,8 +40,6 @@ pub use schema::{
 };
 pub use session::Session;
 pub use side_effects::WorkflowSideEffects;
-// re-export compaction strategy surface used by hosts
-pub use machi_compaction::{CompactionOutcome, CompactionStrategy, MaxMessages, TokenThreshold};
 pub use spawn_tool::SpawnAgentTool;
 pub use state::{ConversationState, VecConversationState};
 pub use turn::{TurnInput, TurnOptions, TurnOutcome, TurnRuntime};

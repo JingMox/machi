@@ -24,8 +24,8 @@ async fn scratch_and_template_round_trip() {
 
     let script = r#"
         let meta = #{ name: "scratch", description: "side effects" };
-        let path = write_scratch("note.txt", "hello-side-effect");
-        let body = read_scratch("note.txt");
+        let path = write_scratch_file("note.txt", "hello-side-effect");
+        let body = read_scratch_file("note.txt");
         let rendered = render_template("report", #{ body: body });
         let a = agent("summarize", #{ label: "s" });
         complete(#{ path: path, body: body, rendered: rendered, agent: a.output });

@@ -1,6 +1,6 @@
 # Makefile for Rust project using Cargo
 
-.PHONY: all build check run test bench clippy clippy-fix fmt doc update
+.PHONY: all build check run test bench deny clippy clippy-fix fmt doc update
 
 all: fmt clippy-fix
 
@@ -27,6 +27,10 @@ test:
 # Run benchmarks with all features enabled
 bench:
 	cargo bench --all-features
+
+# Dependency advisories, licenses, bans, sources
+deny:
+	cargo deny check
 
 # Run Clippy linter with nightly toolchain (check only, for CI)
 # Uses workspace lints from Cargo.toml

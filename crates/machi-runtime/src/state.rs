@@ -63,8 +63,9 @@ impl ConversationState for VecConversationState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use machi_types::Message;
+
+    use super::*;
 
     #[test]
     fn max_messages_keeps_system_and_tail() {

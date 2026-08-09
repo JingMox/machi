@@ -63,7 +63,7 @@ App / CLI / service
         │ injects
         ▼
  Ports: LlmSampler · SessionHost · MetricsSink · ApprovalGate · ChatPersistence
-        · IsolationBackend (later) · ToolSource (later)
+        · IsolationBackend · ToolSource
 ```
 
 - Default CI path: **MockSampler**, no network.  
@@ -84,7 +84,7 @@ App / CLI / service
 | U8 | Docs = code; no phantom crates; no hollow public APIs | rustdoc maturity tags |
 | U9 | Kernel ~40–90k real LOC (density, not padding) | honest size |
 
-**Honesty dial:** P1–P5 ✅ · main-path ~70–75% Ultimate.
+**Honesty dial:** P1–P6 ✅ · N1 demos ✅ · P7 partial · main-path ~78–82% Ultimate · tests ~174/500.
 
 ### 1.4 Permanent non-goals
 
@@ -426,20 +426,35 @@ Machi wins on **clean DAG + firewall + dual-mode intentional API**. Grok wins on
 | 5.2 | `WorkflowRunStore` + Memory/File stores | ✅ |
 | 5.3 | `MemoryPort` + `InMemoryMemory` / `NullMemory` | ✅ |
 
-### Phase 6 — Isolation & tool sources (ports first)
+### Phase 6 — Isolation & tool sources (ports first) ✅ (2026-08-09)
 
-| WP | Work | Acceptance |
-|----|------|------------|
-| 6.1 | `IsolationBackend` trait; InProcess default; worktree feature optional | trait tests |
-| 6.2 | `ToolSource` merge: static registry + MCP adapter feature | list merge test |
+| WP | Work | Status |
+|----|------|--------|
+| 6.1 | `IsolationBackend` + `InProcessIsolation`; host `with_isolation` | ✅ |
+| 6.2 | `ToolSource` + `StaticToolSource` + `merge_tool_sources` | ✅ |
+| 6.3 | Worktree / MCP product adapters | deferred (ports only) |
 
-### Phase 7 — Ultimate polish → 1.0 freeze
+### Phase 7 — Ultimate polish → 1.0 freeze (in progress)
 
-- API freeze policy + CHANGELOG  
-- Full example set; benches for turn/spawn/journal  
-- `cargo deny` / security notes  
-- Tests ≥500; docs = code  
-- Tag **machi 1.0.0** as dual multi-agent lib stable line  
+| WP | Work | Status |
+|----|------|--------|
+| 7.1 | API freeze policy + `CHANGELOG.md` | ✅ policy documented; freeze tag **not** cut |
+| 7.2 | Smoke benches: turn/spawn + journal | ✅ `machi-runtime` / `machi-workflow` harness=false |
+| 7.3 | `cargo deny check` + `SECURITY.md` | ✅ license allow-list + notes |
+| 7.4 | Tests ≥500 meaningful | ⏳ ~172 listed; expand by contract, not padding |
+| 7.5 | Docs = code; maturity tags on new ports | ⏳ ports tagged; ongoing |
+| 7.6 | Tag dual multi-agent lib stable line | ❌ blocked on 7.4 + freeze sign-off |
+
+#### API freeze policy (until declared)
+
+1. Workspace version is already `1.0.0` for consolidation; **semver freeze is
+   not active** until this section says freeze is declared and CHANGELOG records
+   a freeze release.
+2. Until freeze: breaking changes allowed without major bump (AGENTS.md: no BC
+   shims). Prefer deleting hollow API over compatibility layers.
+3. After freeze: follow SemVer; `core` maturity APIs require major for breaks;
+   `experimental` may break in minor until reclassified.
+4. New public API requires: production call site + test + maturity tag.
 
 ---
 
@@ -550,11 +565,25 @@ Any commit that **adds surface area while thinning main path** is a roadmap devi
 
 ---
 
-## 9. Immediate execution queue (Phase 6)
+## 9. Immediate execution queue
 
-1. `IsolationBackend` trait (InProcess default; worktree optional feature later)  
-2. `ToolSource` merge port (static registry + optional MCP adapter feature)  
-3. Keep product shells out of kernel  
+### N1 vertical slice (product-usable demos)
+
+1. Rhai surface: `json_encode`, `write_scratch_file` / `read_scratch_file`, `budget`, bare `complete()`  
+2. Examples: `repo_task` (toolkit), `workflow_plan` (plan+parallel+scratch), `session_resume`  
+3. Next: Phase 6 ports when demos stay green  
+
+### Phase 6 ✅
+
+1. ~~`IsolationBackend` + InProcess~~  
+2. ~~`ToolSource` merge~~  
+
+### Phase 7 (active)
+
+1. ~~CHANGELOG + freeze policy + deny/SECURITY + benches smoke~~  
+2. Grow meaningful tests toward U7 (≥500) without hollow cases  
+3. Maturity tags / docs pass on public surface  
+4. Freeze tag only after U1–U8 honest green
 
 ---
 
@@ -568,6 +597,9 @@ Any commit that **adds surface area while thinning main path** is a roadmap devi
 | 2026-08-08 | Phase 3: metric/span golden, Prometheus HELP/TYPE, stress suite |
 | 2026-08-08 | Phase 4: AgentRegistry, PromptAssembler, fork_messages |
 | 2026-08-08 | Phase 5: session checkpoint paths, WorkflowRunStore, MemoryPort |
+| 2026-08-09 | N1: json_encode/scratch API, repo_task + workflow_plan + session_resume demos |
+| 2026-08-09 | Phase 6: IsolationBackend + ToolSource merge ports |
+| 2026-08-09 | Phase 7 start: CHANGELOG, freeze policy, deny licenses, SECURITY, benches |
 
 **Authority:** this file > ad-hoc chat memory > README feature enthusiasm.  
 **Local drafts:** `docs/` is gitignored; do not rely on it for team truth. Commit architecture truth in `README.md` + this `ROADMAP.md` + rustdoc.

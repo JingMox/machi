@@ -69,9 +69,10 @@ pub fn check_append(history: &[Message], next: &Message) -> Result<(), StrictApp
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use machi_types::{ToolCall, ToolCallId};
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn pairs_ok() {

@@ -151,8 +151,9 @@ pub fn record_compaction(metrics: &dyn MetricsSink, strategy: &str, status: &str
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Mutex;
+
+    use super::*;
 
     /// Golden snapshot — intentional fail on rename/reorder/add/remove.
     const METRIC_CATALOGUE_GOLDEN: &str = "\
