@@ -7,9 +7,19 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::host::{AgentOpts, HostError, WorkflowHostRequest};
-use crate::journal::{Journal, JournalError, request_hash};
+use crate::journal::{
+    Journal, JournalError, host_error_message, host_error_sentinel, request_hash,
+};
 use crate::run::{PauseKind, WorkflowOutcome};
 use crate::{MAX_HOST_CALLS, MAX_PARALLEL};
+
+/// Rhai expression nesting limits (statement depth, expression depth).
+const RHAI_MAX_EXPR_DEPTH_STMT: usize = 128;
+const RHAI_MAX_EXPR_DEPTH_EXPR: usize = 64;
+/// Max Rhai string size (bytes).
+const RHAI_MAX_STRING_SIZE: usize = 16 * 1024 * 1024;
+/// Max Rhai array / map length.
+const RHAI_MAX_ARRAY_MAP_SIZE: usize = 64 * 1024;
 
 /// Parameters for [`run_workflow`].
 #[derive(Debug)]
@@ -84,6 +94,10 @@ pub fn run_workflow(params: WorkflowRunParams) -> WorkflowOutcome {
     let mut engine = Engine::new();
     engine.set_max_operations(max_ops);
     engine.set_max_call_levels(64);
+    engine.set_max_expr_depths(RHAI_MAX_EXPR_DEPTH_STMT, RHAI_MAX_EXPR_DEPTH_EXPR);
+    engine.set_max_string_size(RHAI_MAX_STRING_SIZE);
+    engine.set_max_array_size(RHAI_MAX_ARRAY_MAP_SIZE);
+    engine.set_max_map_size(RHAI_MAX_ARRAY_MAP_SIZE);
     engine.set_module_resolver(rhai::module_resolvers::DummyModuleResolver::new());
     engine.disable_symbol("eval");
     engine.register_fn("timestamp", || -> ScriptResult<()> {
@@ -129,7 +143,7 @@ fn register_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     register_agent_fns(engine, ctx);
     register_notify_fns(engine, ctx);
     register_io_fns(engine, ctx);
-    register_control_fns(engine);
+    register_control_fns(engine, ctx);
 }
 
 fn register_agent_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
@@ -180,11 +194,28 @@ fn register_notify_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
         });
     });
 
+    // `print` / `debug` map to the same host log channel (deterministic, non-journaled).
     let c = Arc::clone(ctx);
-    engine.register_fn("telemetry", move |name: &str, fields: Dynamic| {
+    engine.register_fn("print", move |message: &str| {
+        fire_notify(&c, |replayed| WorkflowHostRequest::Log {
+            message: message.to_owned(),
+            replayed,
+        });
+    });
+
+    let c = Arc::clone(ctx);
+    engine.register_fn("debug", move |message: &str| {
+        fire_notify(&c, |replayed| WorkflowHostRequest::Log {
+            message: format!("debug: {message}"),
+            replayed,
+        });
+    });
+
+    let c = Arc::clone(ctx);
+    engine.register_fn("telemetry_event", move |name: &str, fields: rhai::Map| {
         fire_notify(&c, |replayed| WorkflowHostRequest::Telemetry {
             name: name.to_owned(),
-            fields: dynamic_to_value(fields),
+            fields: dynamic_to_value(Dynamic::from_map(fields)),
             replayed,
         });
     });
@@ -289,10 +320,17 @@ fn register_io_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     });
 }
 
-fn register_control_fns(engine: &mut Engine) {
+fn register_control_fns(engine: &mut Engine, ctx: &Arc<Mutex<Ctx>>) {
     engine.register_fn("json_encode", |value: Dynamic| -> ScriptResult<String> {
         serde_json::to_string(&dynamic_to_value(value))
             .map_err(|e| runtime_error(format!("json_encode failed: {e}")))
+    });
+
+    engine.register_fn("fingerprint", |text: &str| -> String {
+        // Pure deterministic fingerprint (16-byte hex of SHA-256).
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(text.as_bytes());
+        encode_hex16(digest.iter().take(16).copied())
     });
 
     engine.register_fn("complete", |value: Dynamic| -> ScriptResult<()> {
@@ -316,6 +354,48 @@ fn register_control_fns(engine: &mut Engine) {
         };
         Err(terminated(ControlToken::Pause(kind, message.to_owned())))
     });
+
+    // Journaled pause: first run records then pauses; resume skips.
+    let c = Arc::clone(ctx);
+    engine.register_fn(
+        "await_user",
+        move |kind: &str, message: &str| -> ScriptResult<()> {
+            let payload = serde_json::json!({ "kind": kind, "message": message });
+            let hash = request_hash("await_user", &payload);
+            let seq = {
+                let mut g = c.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                g.next_seq()?
+            };
+            {
+                let g = c.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if g.journal
+                    .replay(seq, "await_user", &hash)
+                    .map_err(journal_fatal)?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+            }
+            {
+                let mut g = c.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                g.journal
+                    .record(seq, "await_user", hash, serde_json::Value::Null)
+                    .map_err(journal_fatal)?;
+            }
+            let pause_kind = match kind {
+                "user" => PauseKind::User,
+                "back_off" | "backoff" => PauseKind::BackOff,
+                "no_progress" => PauseKind::NoProgress,
+                "verification" | "blocked" => PauseKind::Verification,
+                "infra" => PauseKind::Infra,
+                _ => PauseKind::User,
+            };
+            Err(terminated(ControlToken::Pause(
+                pause_kind,
+                message.to_owned(),
+            )))
+        },
+    );
 }
 
 enum ParallelSlot {
@@ -333,6 +413,11 @@ enum ParallelSlot {
 }
 
 /// Fan-out: reserve live slots once, dispatch all host spawns, wait as a barrier.
+#[allow(
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "parallel barrier + budget conservation is intentionally collocated"
+)]
 fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptResult<rhai::Array> {
     if items.len() > MAX_PARALLEL {
         return Err(runtime_error(format!(
@@ -417,10 +502,29 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
         }
     }
 
-    let mut results = rhai::Array::with_capacity(slots.len());
-    for slot in slots {
+    // Ordered outputs; live slots journaled after the barrier unless resumable.
+    let mut ordered: Vec<Option<Dynamic>> = Vec::with_capacity(slots.len());
+    let mut live_to_journal: Vec<(usize, u64, String, serde_json::Value)> = Vec::new();
+    let mut resumable_terminal: Option<Box<EvalAltResult>> = None;
+    let mut first_catchable: Option<Box<EvalAltResult>> = None;
+    // Reserved slots that returned Quota on spawn and must be released (dense Null journaled).
+    let mut quota_release: u64 = 0;
+
+    for (idx, slot) in slots.into_iter().enumerate() {
         match slot {
-            ParallelSlot::Replayed(value) => results.push(value_to_dynamic(&value)?),
+            ParallelSlot::Replayed(value) => {
+                if let Some(msg) = host_error_message(&value) {
+                    first_catchable.get_or_insert_with(|| runtime_error(msg.to_owned()));
+                    ordered.push(None);
+                    continue;
+                }
+                // Soft-null from a prior Quota journal replays as unit.
+                if value.is_null() {
+                    ordered.push(Some(Dynamic::UNIT));
+                    continue;
+                }
+                ordered.push(Some(value_to_dynamic(&value)?));
+            }
             ParallelSlot::Pending { .. } => {
                 return Err(terminated(ControlToken::Fatal(
                     "internal: pending slot after dispatch".into(),
@@ -434,35 +538,112 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
                 let reply = reply_rx.blocking_recv().map_err(|_| {
                     terminated(ControlToken::Fatal("workflow host dropped reply".into()))
                 })?;
-                let value = map_spawn_reply(reply)?;
-                {
-                    let mut g = ctx
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    g.journal
-                        .record(seq, "spawn_agent", hash, value.clone())
-                        .map_err(journal_fatal)?;
+                match reply {
+                    Ok(result) => {
+                        let value = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
+                        live_to_journal.push((idx, seq, hash, value));
+                        ordered.push(None); // filled after journal
+                    }
+                    Err(HostError::BudgetExceeded) => {
+                        resumable_terminal.get_or_insert(terminated(ControlToken::Budget(
+                            "workflow agent budget exceeded".into(),
+                        )));
+                        ordered.push(None);
+                    }
+                    Err(HostError::Cancelled) => {
+                        resumable_terminal.get_or_insert(terminated(ControlToken::Cancelled));
+                        ordered.push(None);
+                    }
+                    Err(HostError::AgentCallQuotaExceeded { .. }) => {
+                        // Catchable null — journal Null to keep dense seq (W1.10 + journal invariant).
+                        live_to_journal.push((idx, seq, hash, serde_json::Value::Null));
+                        quota_release = quota_release.saturating_add(1);
+                        ordered.push(None);
+                    }
+                    Err(HostError::Unsupported(msg) | HostError::Failed(msg)) => {
+                        live_to_journal.push((idx, seq, hash, host_error_sentinel(&msg)));
+                        first_catchable.get_or_insert_with(|| runtime_error(msg));
+                        ordered.push(None);
+                    }
                 }
-                results.push(value_to_dynamic(&value)?);
             }
         }
+    }
+
+    // Budget conservation: resumable terminal releases all live reservations and journals nothing.
+    if let Some(err) = resumable_terminal {
+        release_n(ctx, live_count);
+        return Err(err);
+    }
+
+    // Journal in seq order so dense validation cannot fail on out-of-order collection.
+    live_to_journal.sort_by_key(|(_, seq, _, _)| *seq);
+    for (idx, seq, hash, value) in live_to_journal {
+        let is_host_err = host_error_message(&value).is_some();
+        let is_quota_null = value.is_null();
+        {
+            let mut g = ctx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.journal
+                .record(seq, "spawn_agent", hash, value.clone())
+                .map_err(journal_fatal)?;
+        }
+        if let Some(slot) = ordered.get_mut(idx) {
+            if is_host_err {
+                // Catchable path surfaces after all journaled.
+            } else if is_quota_null {
+                *slot = Some(Dynamic::UNIT);
+            } else {
+                *slot = Some(value_to_dynamic(&value)?);
+            }
+        }
+    }
+
+    // Hosts that reject spawn with Quota without consuming reserved slots need release.
+    if quota_release > 0 {
+        release_n(ctx, quota_release);
+    }
+
+    if let Some(err) = first_catchable {
+        return Err(err);
+    }
+
+    let mut results = rhai::Array::with_capacity(ordered.len());
+    for item in ordered {
+        results.push(item.unwrap_or(Dynamic::UNIT));
     }
     Ok(results)
 }
 
-fn map_spawn_reply(
+fn map_spawn_reply_live(
     reply: Result<crate::host::AgentResult, HostError>,
-) -> ScriptResult<serde_json::Value> {
+    seq: u64,
+    hash: String,
+) -> Result<serde_json::Value, SpawnLiveError> {
     match reply {
         Ok(result) => Ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null)),
-        Err(HostError::BudgetExceeded | HostError::AgentCallQuotaExceeded { .. }) => {
-            Err(terminated(ControlToken::Budget(
-                "workflow agent budget exceeded".into(),
-            )))
+        Err(HostError::BudgetExceeded) => Err(SpawnLiveError::Resumable(terminated(
+            ControlToken::Budget("workflow agent budget exceeded".into()),
+        ))),
+        Err(HostError::Cancelled) => Err(SpawnLiveError::Resumable(terminated(
+            ControlToken::Cancelled,
+        ))),
+        Err(HostError::AgentCallQuotaExceeded { requested, maximum }) => {
+            Err(SpawnLiveError::Catchable(runtime_error(format!(
+                "workflow agent-call quota exceeded: requested {requested}, maximum {maximum}"
+            ))))
         }
-        Err(HostError::Cancelled) => Err(terminated(ControlToken::Cancelled)),
-        Err(HostError::Unsupported(msg) | HostError::Failed(msg)) => Err(runtime_error(msg)),
+        Err(HostError::Unsupported(msg) | HostError::Failed(msg)) => {
+            Err(SpawnLiveError::JournalThenCatchable { seq, hash, msg })
+        }
     }
+}
+
+enum SpawnLiveError {
+    Resumable(Box<EvalAltResult>),
+    Catchable(Box<EvalAltResult>),
+    JournalThenCatchable { seq: u64, hash: String, msg: String },
 }
 
 fn spawn_agent(ctx: &Arc<Mutex<Ctx>>, opts: AgentOpts) -> ScriptResult<Dynamic> {
@@ -485,6 +666,9 @@ fn spawn_agent(ctx: &Arc<Mutex<Ctx>>, opts: AgentOpts) -> ScriptResult<Dynamic> 
             .replay(seq, "spawn_agent", &hash)
             .map_err(journal_fatal)?
         {
+            if let Some(msg) = host_error_message(&recorded) {
+                return Err(runtime_error(msg.to_owned()));
+            }
             return value_to_dynamic(&recorded);
         }
     }
@@ -508,17 +692,41 @@ fn spawn_agent(ctx: &Arc<Mutex<Ctx>>, opts: AgentOpts) -> ScriptResult<Dynamic> 
         .blocking_recv()
         .map_err(|_| terminated(ControlToken::Fatal("workflow host dropped reply".into())))?;
 
-    let value = map_spawn_reply(reply)?;
-
-    {
-        let mut g = ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        g.journal
-            .record(seq, "spawn_agent", hash, value.clone())
-            .map_err(journal_fatal)?;
+    match map_spawn_reply_live(reply, seq, hash.clone()) {
+        Ok(value) => {
+            {
+                let mut g = ctx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                g.journal
+                    .record(seq, "spawn_agent", hash, value.clone())
+                    .map_err(journal_fatal)?;
+            }
+            value_to_dynamic(&value)
+        }
+        Err(SpawnLiveError::Resumable(err)) => {
+            // Budget conservation: release reserved slot; journal nothing.
+            release_n(ctx, 1);
+            Err(err)
+        }
+        Err(SpawnLiveError::Catchable(err)) => {
+            release_n(ctx, 1);
+            Err(err)
+        }
+        Err(SpawnLiveError::JournalThenCatchable { seq, hash, msg }) => {
+            let sentinel = host_error_sentinel(&msg);
+            {
+                let mut g = ctx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                g.journal
+                    .record(seq, "spawn_agent", hash, sentinel)
+                    .map_err(journal_fatal)?;
+            }
+            // Slot was spent on a failed host call that is journaled — do not release.
+            Err(runtime_error(msg))
+        }
     }
-    value_to_dynamic(&value)
 }
 
 /// Journaled host RPC returning a string (scratch / template / …).
@@ -544,6 +752,9 @@ where
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(recorded) = g.journal.replay(seq, kind, &hash).map_err(journal_fatal)? {
+            if let Some(msg) = host_error_message(&recorded) {
+                return Err(runtime_error(msg.to_owned()));
+            }
             return Ok(recorded
                 .as_str()
                 .map(str::to_owned)
@@ -574,6 +785,15 @@ where
             )));
         }
         Err(HostError::Unsupported(msg) | HostError::Failed(msg)) => {
+            let sentinel = host_error_sentinel(&msg);
+            {
+                let mut g = ctx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                g.journal
+                    .record(seq, kind, hash, sentinel)
+                    .map_err(journal_fatal)?;
+            }
             return Err(runtime_error(msg));
         }
     };
@@ -622,6 +842,42 @@ fn reserve_n(ctx: &Arc<Mutex<Ctx>>, count: u64) -> ScriptResult<()> {
         Err(HostError::Cancelled) => Err(terminated(ControlToken::Cancelled)),
         Err(HostError::Unsupported(msg) | HostError::Failed(msg)) => Err(runtime_error(msg)),
     }
+}
+
+/// Release reserved agent-call slots (budget conservation on resumable termination).
+fn release_n(ctx: &Arc<Mutex<Ctx>>, count: u64) {
+    if count == 0 {
+        return;
+    }
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let send_ok = {
+        let g = ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.host_tx
+            .send(WorkflowHostRequest::ReleaseAgentCalls {
+                count,
+                reply: reply_tx,
+            })
+            .is_ok()
+    };
+    if send_ok {
+        let _ = reply_rx.blocking_recv();
+    }
+}
+
+fn encode_hex16(bytes: impl IntoIterator<Item = u8>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(32);
+    for b in bytes {
+        let hi = usize::from(b >> 4);
+        let lo = usize::from(b & 0x0f);
+        if let (Some(&h), Some(&l)) = (HEX.get(hi), HEX.get(lo)) {
+            out.push(char::from(h));
+            out.push(char::from(l));
+        }
+    }
+    out
 }
 
 fn agent_opts_from_map(map: rhai::Map) -> ScriptResult<AgentOpts> {
@@ -964,5 +1220,433 @@ mod tests {
             matches!(outcome, WorkflowOutcome::BudgetExceeded { .. }),
             "{outcome:?}"
         );
+    }
+
+    /// Host that can cancel or budget-fail the Nth spawn while tracking reserved slots.
+    fn spawn_host_with_policy(
+        budget: u64,
+        fail_mode: &'static str,
+    ) -> (
+        mpsc::UnboundedSender<WorkflowHostRequest>,
+        tokio::task::JoinHandle<()>,
+        Arc<AtomicU64>,
+        Arc<AtomicU64>,
+    ) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let spent = Arc::new(AtomicU64::new(0));
+        let reserved_peak = Arc::new(AtomicU64::new(0));
+        let spent2 = spent.clone();
+        let reserved_peak2 = reserved_peak.clone();
+        let handle = tokio::task::spawn(async move {
+            let mut reserved = 0u64;
+            while let Some(req) = rx.recv().await {
+                match req {
+                    WorkflowHostRequest::ReserveAgentCalls { count, reply } => {
+                        if reserved + count + spent2.load(Ordering::SeqCst) > budget {
+                            let _ = reply.send(Err(HostError::BudgetExceeded));
+                        } else {
+                            reserved += count;
+                            reserved_peak2.fetch_max(reserved, Ordering::SeqCst);
+                            let _ = reply.send(Ok(()));
+                        }
+                    }
+                    WorkflowHostRequest::ReleaseAgentCalls { count, reply } => {
+                        reserved = reserved.saturating_sub(count);
+                        let _ = reply.send(Ok(()));
+                    }
+                    WorkflowHostRequest::SpawnAgent { opts, reply } => match fail_mode {
+                        "cancel" => {
+                            let _ = reply.send(Err(HostError::Cancelled));
+                        }
+                        "budget_on_spawn" => {
+                            let _ = reply.send(Err(HostError::BudgetExceeded));
+                        }
+                        "fail" => {
+                            let _ = reply.send(Err(HostError::Failed("host boom".into())));
+                        }
+                        _ => {
+                            spent2.fetch_add(1, Ordering::SeqCst);
+                            reserved = reserved.saturating_sub(1);
+                            let _ = reply.send(Ok(AgentResult {
+                                agent_id: format!("a-{}", spent2.load(Ordering::SeqCst)),
+                                success: true,
+                                output: serde_json::json!({"prompt": opts.prompt}),
+                                cancelled: false,
+                                tokens_used: 1,
+                                duration_ms: 1,
+                            }));
+                        }
+                    },
+                    WorkflowHostRequest::Phase { .. }
+                    | WorkflowHostRequest::Log { .. }
+                    | WorkflowHostRequest::Telemetry { .. } => {}
+                    WorkflowHostRequest::BudgetQuery { reply } => {
+                        let spent = spent2.load(Ordering::SeqCst);
+                        let _ = reply.send(Ok(crate::host::BudgetState {
+                            total: Some(budget),
+                            spent,
+                            reserved,
+                            remaining: Some(budget.saturating_sub(spent + reserved)),
+                        }));
+                    }
+                    WorkflowHostRequest::RenderTemplate { reply, .. }
+                    | WorkflowHostRequest::WriteScratchFile { reply, .. }
+                    | WorkflowHostRequest::ReadScratchFile { reply, .. }
+                    | WorkflowHostRequest::GitDiffSince { reply, .. } => {
+                        let _ = reply.send(Err(HostError::Unsupported("n/a".into())));
+                    }
+                }
+            }
+        });
+        (tx, handle, spent, reserved_peak)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_live_agent_releases_budget_so_resume_does_not_double_charge() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("j.jsonl");
+        let (tx, host, spent, _) = spawn_host_with_policy(4, "cancel");
+        let script = r#"
+            let meta = #{ name: "t", description: "t" };
+            agent("one");
+            complete(1);
+        "#;
+        let outcome = {
+            let tx = tx.clone();
+            let path = path.clone();
+            let script = script.to_owned();
+            tokio::task::spawn_blocking(move || {
+                run_workflow(WorkflowRunParams {
+                    script,
+                    args: serde_json::json!({}),
+                    journal: Journal::new(Some(path)),
+                    host_tx: tx,
+                    cancel: CancellationToken::new(),
+                    max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+                })
+            })
+            .await
+            .expect("join")
+        };
+        assert!(matches!(outcome, WorkflowOutcome::Cancelled), "{outcome:?}");
+        // Cancelled path must not journal the interrupted spawn.
+        let journal = Journal::load(path.clone()).expect("load");
+        assert_eq!(journal.len(), 0, "cancelled spawn must not be journaled");
+        assert_eq!(spent.load(Ordering::SeqCst), 0);
+
+        // Resume with a healthy host must succeed without double-charging.
+        drop(host);
+        let (tx2, host2, spent2) = spawn_host(4);
+        let journal = Journal::load(path).expect("load2");
+        let script = r#"
+            let meta = #{ name: "t", description: "t" };
+            agent("one");
+            complete(1);
+        "#;
+        let outcome2 = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal,
+                host_tx: tx2,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host2);
+        assert!(
+            matches!(outcome2, WorkflowOutcome::Completed { .. }),
+            "{outcome2:?}"
+        );
+        assert_eq!(spent2.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn budget_exceeded_live_agent_releases_and_journals_nothing() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("j.jsonl");
+        let (tx, host, _, _) = spawn_host_with_policy(4, "budget_on_spawn");
+        let script = r#"
+            let meta = #{ name: "t", description: "t" };
+            agent("one");
+            complete(1);
+        "#;
+        let path_run = path.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal: Journal::new(Some(path_run)),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host);
+        assert!(
+            matches!(outcome, WorkflowOutcome::BudgetExceeded { .. }),
+            "{outcome:?}"
+        );
+        let journal = Journal::load(path).expect("load");
+        assert_eq!(journal.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_error_sentinel_journals_and_replays() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("j.jsonl");
+        let (tx, host, _, _) = spawn_host_with_policy(4, "fail");
+        let script = r#"
+            let meta = #{ name: "t", description: "t" };
+            agent("one");
+            complete(1);
+        "#;
+        let outcome = {
+            let tx = tx.clone();
+            let path = path.clone();
+            let script = script.to_owned();
+            tokio::task::spawn_blocking(move || {
+                run_workflow(WorkflowRunParams {
+                    script,
+                    args: serde_json::json!({}),
+                    journal: Journal::new(Some(path)),
+                    host_tx: tx,
+                    cancel: CancellationToken::new(),
+                    max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+                })
+            })
+            .await
+            .expect("join")
+        };
+        drop(host);
+        assert!(
+            matches!(outcome, WorkflowOutcome::Failed { .. }),
+            "{outcome:?}"
+        );
+        let journal = Journal::load(path.clone()).expect("load");
+        assert_eq!(journal.len(), 1);
+        assert!(
+            journal
+                .entries()
+                .first()
+                .is_some_and(|e| crate::journal::is_host_error_sentinel(&e.result)),
+            "expected host-error sentinel"
+        );
+
+        // Resume re-raises without calling host spawn.
+        let (tx2, host2, spent2) = spawn_host(4);
+        let outcome2 = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal: Journal::load(path).expect("load2"),
+                host_tx: tx2,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host2);
+        assert!(
+            matches!(outcome2, WorkflowOutcome::Failed { .. }),
+            "{outcome2:?}"
+        );
+        assert_eq!(spent2.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn await_user_pauses_once_then_passes_on_resume() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("j.jsonl");
+        let (tx, host, spent) = spawn_host(4);
+        let script = r#"
+            let meta = #{ name: "t", description: "t" };
+            await_user("user", "needs a human");
+            agent("after");
+            complete(1);
+        "#;
+        let outcome1 = {
+            let tx = tx.clone();
+            let path = path.clone();
+            let script = script.to_owned();
+            tokio::task::spawn_blocking(move || {
+                run_workflow(WorkflowRunParams {
+                    script,
+                    args: serde_json::json!({}),
+                    journal: Journal::new(Some(path)),
+                    host_tx: tx,
+                    cancel: CancellationToken::new(),
+                    max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+                })
+            })
+            .await
+            .expect("join")
+        };
+        assert!(
+            matches!(
+                outcome1,
+                WorkflowOutcome::Paused {
+                    kind: PauseKind::User,
+                    ..
+                }
+            ),
+            "{outcome1:?}"
+        );
+        assert_eq!(spent.load(Ordering::SeqCst), 0);
+
+        let journal = Journal::load(path).expect("load");
+        assert_eq!(journal.len(), 1);
+        let outcome2 = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal,
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host);
+        assert!(
+            matches!(outcome2, WorkflowOutcome::Completed { .. }),
+            "{outcome2:?}"
+        );
+        assert_eq!(spent.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_parallel_releases_budget() {
+        let (tx, host, spent, _) = spawn_host_with_policy(8, "cancel");
+        let script = r#"
+            let meta = #{ name: "t", description: "t" };
+            parallel([#{ prompt: "a" }, #{ prompt: "b" }]);
+            complete(1);
+        "#;
+        let outcome = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal: Journal::new(None),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host);
+        assert!(matches!(outcome, WorkflowOutcome::Cancelled), "{outcome:?}");
+        assert_eq!(spent.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parallel_quota_journals_null_and_keeps_dense_seq() {
+        // Host: first spawn succeeds, second returns Quota, third succeeds.
+        let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowHostRequest>();
+        let host = tokio::spawn(async move {
+            let mut reserved = 0u64;
+            let mut spawn_n = 0u64;
+            while let Some(req) = rx.recv().await {
+                match req {
+                    WorkflowHostRequest::ReserveAgentCalls { count, reply } => {
+                        reserved = reserved.saturating_add(count);
+                        let _ = reply.send(Ok(()));
+                    }
+                    WorkflowHostRequest::ReleaseAgentCalls { count, reply } => {
+                        reserved = reserved.saturating_sub(count);
+                        let _ = reply.send(Ok(()));
+                    }
+                    WorkflowHostRequest::SpawnAgent { opts, reply } => {
+                        spawn_n = spawn_n.saturating_add(1);
+                        if spawn_n == 2 {
+                            // Do not consume reserved — engine must release.
+                            let _ = reply.send(Err(HostError::AgentCallQuotaExceeded {
+                                requested: 1,
+                                maximum: 0,
+                            }));
+                        } else {
+                            reserved = reserved.saturating_sub(1);
+                            let _ = reply.send(Ok(AgentResult {
+                                agent_id: format!("a-{spawn_n}"),
+                                success: true,
+                                output: serde_json::json!({"prompt": opts.prompt}),
+                                cancelled: false,
+                                tokens_used: 1,
+                                duration_ms: 1,
+                            }));
+                        }
+                    }
+                    WorkflowHostRequest::BudgetQuery { reply } => {
+                        let _ = reply.send(Ok(crate::host::BudgetState {
+                            total: Some(10),
+                            spent: 0,
+                            reserved,
+                            remaining: Some(10),
+                        }));
+                    }
+                    WorkflowHostRequest::Phase { .. }
+                    | WorkflowHostRequest::Log { .. }
+                    | WorkflowHostRequest::Telemetry { .. } => {}
+                    WorkflowHostRequest::RenderTemplate { reply, .. }
+                    | WorkflowHostRequest::WriteScratchFile { reply, .. }
+                    | WorkflowHostRequest::ReadScratchFile { reply, .. }
+                    | WorkflowHostRequest::GitDiffSince { reply, .. } => {
+                        let _ = reply.send(Err(HostError::Unsupported("n/a".into())));
+                    }
+                }
+            }
+        });
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("quota.jsonl");
+        let script = r#"
+            let meta = #{ name: "q", description: "q" };
+            let rows = parallel([
+                #{ prompt: "a" },
+                #{ prompt: "b" },
+                #{ prompt: "c" }
+            ]);
+            complete(#{ n: rows.len() });
+        "#;
+        let path_run = path.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            run_workflow(WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal: Journal::new(Some(path_run)),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            })
+        })
+        .await
+        .expect("join");
+        drop(host);
+        assert!(
+            matches!(outcome, WorkflowOutcome::Completed { .. }),
+            "{outcome:?}"
+        );
+        let journal = Journal::load(path).expect("load");
+        assert_eq!(journal.len(), 3, "dense seq: success, null, success");
+        assert!(
+            journal.entries().get(1).is_some_and(|e| e.result.is_null()),
+            "middle slot must be journaled null"
+        );
+    }
+
+    #[test]
+    fn fingerprint_is_deterministic() {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(b"hello");
+        let a = encode_hex16(digest.iter().take(16).copied());
+        let b = encode_hex16(digest.iter().take(16).copied());
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 32);
     }
 }

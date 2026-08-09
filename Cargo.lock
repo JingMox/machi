@@ -938,14 +938,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "machi-auto"
-version = "1.0.0"
-dependencies = [
- "machi",
- "tokio",
-]
-
-[[package]]
 name = "machi-compaction"
 version = "1.0.0"
 dependencies = [
@@ -1062,6 +1054,7 @@ dependencies = [
 name = "machi-workflow"
 version = "1.0.0"
 dependencies = [
+ "libc",
  "rhai",
  "serde",
  "serde_json",
