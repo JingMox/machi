@@ -16,9 +16,7 @@ use machi_types::{ErrorCode, MachiError};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
-use crate::retry::{
-    RetryContext, RetryDecision, RetryPolicy, decide_retry, is_empty_response,
-};
+use crate::retry::{RetryContext, RetryDecision, RetryPolicy, decide_retry, is_empty_response};
 use crate::sample::{SampleRequest, SampleResponse};
 use crate::sampler::LlmSampler;
 use crate::stream::{SampleEvent, SampleStream};
@@ -179,10 +177,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
     }
 }
 
-async fn sleep_cancellable(
-    dur: Duration,
-    cancel: &CancellationToken,
-) -> Result<(), MachiError> {
+async fn sleep_cancellable(dur: Duration, cancel: &CancellationToken) -> Result<(), MachiError> {
     if dur.is_zero() {
         return Ok(());
     }
@@ -225,8 +220,10 @@ fn idle_timeout_stream(
         }
         match timeout(st.idle, stream.next()).await {
             Ok(Some(ev)) => {
-                let terminal =
-                    matches!(ev, SampleEvent::Completed { .. } | SampleEvent::Failed { .. });
+                let terminal = matches!(
+                    ev,
+                    SampleEvent::Completed { .. } | SampleEvent::Failed { .. }
+                );
                 let next_stream = if terminal { None } else { Some(stream) };
                 Some((
                     ev,

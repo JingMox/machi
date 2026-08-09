@@ -235,9 +235,10 @@ impl ErrorCode {
     #[must_use]
     pub const fn default_retry(self) -> RetryClass {
         match self {
-            Self::LlmRateLimit | Self::LlmRateLimited | Self::LlmProvider | Self::LlmEmptyResponse => {
-                RetryClass::Backoff
-            }
+            Self::LlmRateLimit
+            | Self::LlmRateLimited
+            | Self::LlmProvider
+            | Self::LlmEmptyResponse => RetryClass::Backoff,
             Self::LlmAuth => RetryClass::AuthRefresh,
             Self::ToolTimeout => RetryClass::Immediate,
             Self::ToolCancelled

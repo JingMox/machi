@@ -107,10 +107,7 @@ pub struct RetryContext {
 /// - other 5xx → retry  
 /// - else → fatal (unknown 4xx)
 #[must_use]
-pub fn classify_http_status(
-    status: u16,
-    x_should_retry: Option<bool>,
-) -> HttpRetryClass {
+pub fn classify_http_status(status: u16, x_should_retry: Option<bool>) -> HttpRetryClass {
     if x_should_retry == Some(false) {
         return HttpRetryClass::Fatal;
     }
@@ -147,11 +144,7 @@ pub fn error_code_for_http(status: u16, class: HttpRetryClass) -> ErrorCode {
 
 /// Decide whether to retry after a [`MachiError`].
 #[must_use]
-pub fn decide_retry(
-    policy: &RetryPolicy,
-    err: &MachiError,
-    ctx: &RetryContext,
-) -> RetryDecision {
+pub fn decide_retry(policy: &RetryPolicy, err: &MachiError, ctx: &RetryContext) -> RetryDecision {
     let next_attempt = ctx.attempt.saturating_add(1);
     if next_attempt >= policy.max_attempts {
         return RetryDecision::Fatal;
@@ -243,11 +236,7 @@ pub fn backoff_for_attempt(policy: &RetryPolicy, attempt: u32) -> Duration {
         .unwrap_or(u64::MAX)
         .min(u64::try_from(policy.max_backoff.as_millis()).unwrap_or(u64::MAX));
     let base = Duration::from_millis(base_ms);
-    if policy.jitter {
-        jittered(base)
-    } else {
-        base
-    }
+    if policy.jitter { jittered(base) } else { base }
 }
 
 fn jittered(base: Duration) -> Duration {

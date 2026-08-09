@@ -124,9 +124,7 @@ impl Add for Usage {
             input_tokens: self.input_tokens.saturating_add(rhs.input_tokens),
             output_tokens: self.output_tokens.saturating_add(rhs.output_tokens),
             total_tokens: self.total_tokens.saturating_add(rhs.total_tokens),
-            cache_read_tokens: self
-                .cache_read_tokens
-                .saturating_add(rhs.cache_read_tokens),
+            cache_read_tokens: self.cache_read_tokens.saturating_add(rhs.cache_read_tokens),
             cache_creation_tokens: self
                 .cache_creation_tokens
                 .saturating_add(rhs.cache_creation_tokens),
