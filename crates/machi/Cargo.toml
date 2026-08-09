@@ -45,5 +45,21 @@ tokio-util = { workspace = true }
 name = "session_checkpoint"
 required-features = ["state"]
 
+[[example]]
+name = "session_resume"
+required-features = ["state"]
+
+[[example]]
+name = "repo_task"
+required-features = ["toolkit", "obs"]
+
+[[example]]
+name = "workflow_plan"
+required-features = ["workflow", "obs"]
+
+[[example]]
+name = "workflow_ollama"
+required-features = ["ollama", "workflow"]
+
 [lints]
 workspace = true

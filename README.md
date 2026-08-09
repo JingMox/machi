@@ -110,10 +110,30 @@ Agents: load Markdown definitions via `parse_definition_markdown` /
 `discover_project` (`.machi/agents/*.md`). Session: `run_turn_on_handle` syncs
 to `ChatStateHandle`. LLM: `LlmSampler::sample_stream` (+ mock default).
 
-Workflow core: `validate_script`, `write_scratch` / `read_scratch` /
-`render_template` (journaled). Optional: `git_diff_since` after
-`WorkflowSideEffects::set_git_cwd`. Metrics: inject `SharedMetrics`;
-`RecordingMetrics` / `PrometheusRecorder` for capture/export.
+Workflow core: `validate_script`, `write_scratch_file` / `read_scratch_file` /
+`json_encode` / `budget` / `render_template` (journaled). Optional:
+`git_diff_since` after `WorkflowSideEffects::set_git_cwd`. Metrics: inject
+`SharedMetrics`; `RecordingMetrics` / `PrometheusRecorder` for capture/export.
+
+### Vertical slice demos (offline)
+
+```bash
+# Toolkit write through TurnRuntime (mock)
+cargo run -p machi --example repo_task --features "toolkit,obs"
+# Plan → parallel → scratch report (mock)
+cargo run -p machi --example workflow_plan --features "workflow,obs"
+# Session file checkpoint resume
+cargo run -p machi --example session_resume --features state
+# Live Ollama workflow (optional)
+cargo run -p machi --example workflow_ollama --features ollama
+```
+
+### Isolation & tool sources
+
+- Host: `InProcessHost::with_isolation(Arc<dyn IsolationBackend>)` (default
+  `InProcessIsolation` — same process/FS; product worktrees inject their own backend).
+- Tools: `ToolSource` / `StaticToolSource` / `merge_tool_sources` (last source wins
+  on name). MCP adapters implement the trait outside the kernel.
 
 ### Quality
 
@@ -126,7 +146,13 @@ cargo +nightly clippy --workspace \
   --allow-dirty \
   --allow-staged \
   -- -D warnings
+cargo deny check
+cargo bench -p machi-runtime --bench turn_spawn
+cargo bench -p machi-workflow --bench journal
 ```
+
+See [`CHANGELOG.md`](./CHANGELOG.md), [`SECURITY.md`](./SECURITY.md),
+[`ROADMAP.md`](./ROADMAP.md) (Phase 7 freeze policy).
 
 ## License
 

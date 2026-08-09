@@ -59,14 +59,15 @@ pub fn extract_meta(script: &str) -> Result<WorkflowMeta, MetaError> {
     );
     engine.register_fn("log", |_m: &str| {});
     engine.register_fn("telemetry", |_n: &str, _f: rhai::Dynamic| {});
-    engine.register_fn("write_scratch", |_n: &str, _c: &str| String::new());
-    engine.register_fn("read_scratch", |_n: &str| String::new());
+    engine.register_fn("write_scratch_file", |_n: &str, _c: &str| String::new());
+    engine.register_fn("read_scratch_file", |_n: &str| String::new());
     engine.register_fn("render_template", |_n: &str, _v: rhai::Dynamic| {
         String::new()
     });
     engine.register_fn("git_diff_since", |_c: &str| String::new());
     engine.register_fn("parallel", |_a: rhai::Array| rhai::Array::new());
     engine.register_fn("budget", rhai::Map::new);
+    engine.register_fn("json_encode", |_v: rhai::Dynamic| String::from("null"));
 
     let mut scope = rhai::Scope::new();
     scope.push_dynamic("args", rhai::Dynamic::UNIT);

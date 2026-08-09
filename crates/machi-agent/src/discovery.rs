@@ -214,9 +214,11 @@ fn parse_simple_yaml_map(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn parses_frontmatter() {

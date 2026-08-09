@@ -75,9 +75,10 @@ pub use machi_runtime as runtime;
 pub use machi_runtime::{
     AgentRunResult, CompactionOutcome, CompactionStrategy, CompletionToolGate, ConversationState,
     DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, GateChain, GateDecision,
-    InProcessHost, MaxMessages, MetricsSink, NoopMetrics, Session, SessionHost, SharedMetrics,
-    SpawnAgentTool, SpawnOpts, StopGate, TokenThreshold, TurnInput, TurnOptions, TurnOutcome,
-    TurnRuntime, VecConversationState, evaluate_stop_gates,
+    InProcessHost, InProcessIsolation, IsolationBackend, IsolationEnv, MaxMessages, MetricsSink,
+    NoopMetrics, Session, SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, StopGate,
+    TokenThreshold, TurnInput, TurnOptions, TurnOutcome, TurnRuntime, VecConversationState,
+    evaluate_stop_gates, isolation_error,
 };
 #[cfg(all(feature = "runtime", feature = "workflow"))]
 pub use machi_runtime::{
@@ -105,9 +106,10 @@ pub use machi_tools as tools;
 pub use machi_tools::{
     AlwaysDeny, ApprovalDecision, ApprovalGate, ApprovalPolicy, AutoApprove, CalcTool,
     CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchOutcome,
-    DispatchRequest, DynTool, EXTRA_SPAWN_DEPTH, InterruptBehavior, SharedTool, ToolCallContext,
-    ToolDefinition, ToolDispatch, ToolError, ToolMetadata, ToolProgress, ToolRegistry, ToolResult,
-    ToolStream, ToolStreamItem, drain_terminal, drain_with_progress, terminal_only, with_progress,
+    DispatchRequest, DynTool, EXTRA_SPAWN_DEPTH, InterruptBehavior, SharedTool, StaticToolSource,
+    ToolCallContext, ToolDefinition, ToolDispatch, ToolError, ToolMetadata, ToolProgress,
+    ToolRegistry, ToolResult, ToolSource, ToolStream, ToolStreamItem, drain_terminal,
+    drain_with_progress, merge_arc_sources, merge_tool_sources, terminal_only, with_progress,
 };
 pub use machi_types as types;
 pub use machi_types::{

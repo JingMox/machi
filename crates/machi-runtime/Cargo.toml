@@ -31,5 +31,9 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
+[[bench]]
+name = "turn_spawn"
+harness = false
+
 [lints]
 workspace = true

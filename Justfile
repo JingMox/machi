@@ -26,6 +26,10 @@ test:
 bench:
     cargo bench --all-features
 
+# Dependency advisories, licenses, bans, sources
+deny:
+    cargo deny check
+
 # Run Clippy linter with nightly toolchain (check only, for CI)
 # Uses workspace lints from Cargo.toml
 clippy:

@@ -46,8 +46,9 @@ pub fn schema_retry_reminder(error: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn accepts_valid() {

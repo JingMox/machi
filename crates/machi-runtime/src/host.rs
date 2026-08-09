@@ -25,6 +25,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span};
 
+use crate::isolation::{InProcessIsolation, IsolationBackend};
 use crate::state::VecConversationState;
 use crate::turn::{TurnInput, TurnOptions, TurnRuntime};
 
@@ -217,6 +218,8 @@ pub struct InProcessHost {
     agent_registry: AgentRegistry,
     /// System prompt assembler (project AGENTS.md, etc.).
     prompt_assembler: Arc<dyn PromptAssembler>,
+    /// Isolation backend for child environments (default in-process).
+    isolation: Arc<dyn IsolationBackend>,
     metrics: SharedMetrics,
 }
 
@@ -231,6 +234,7 @@ impl std::fmt::Debug for InProcessHost {
             .field("max_spawn_depth", &self.max_spawn_depth)
             .field("max_concurrent_children", &self.max_concurrent_children)
             .field("agent_registry", &self.agent_registry.len())
+            .field("isolation", &self.isolation.name())
             .finish_non_exhaustive()
     }
 }
@@ -251,6 +255,7 @@ impl InProcessHost {
             max_concurrent_children: Some(DEFAULT_MAX_CONCURRENT_CHILDREN),
             agent_registry: AgentRegistry::new(),
             prompt_assembler: Arc::new(IdentityAssembler),
+            isolation: Arc::new(InProcessIsolation),
             metrics: Arc::new(NoopMetrics),
         }
     }
@@ -300,6 +305,13 @@ impl InProcessHost {
     #[must_use]
     pub fn with_prompt_assembler(mut self, assembler: Arc<dyn PromptAssembler>) -> Self {
         self.prompt_assembler = assembler;
+        self
+    }
+
+    /// Install an isolation backend (default [`InProcessIsolation`]).
+    #[must_use]
+    pub fn with_isolation(mut self, isolation: Arc<dyn IsolationBackend>) -> Self {
+        self.isolation = isolation;
         self
     }
 
@@ -482,6 +494,7 @@ impl InProcessHost {
             let _permit = self.try_acquire_concurrency()?;
             self.reserve_slot()?;
 
+            let isolation_env = self.isolation.prepare(&opts).await?;
             let started = Instant::now();
             let agent = self.build_child(&opts)?;
             let mut state = Self::child_state(&opts)?;
@@ -494,6 +507,7 @@ impl InProcessHost {
                 metrics: Arc::clone(&self.metrics),
                 spawn_depth: Some(opts.depth),
                 max_output_tokens,
+                cwd: isolation_env.cwd.clone(),
                 ..TurnOptions::default()
             };
             let outcome = match self
@@ -509,10 +523,15 @@ impl InProcessHost {
             {
                 Ok(o) => o,
                 Err(e) => {
+                    let _ = self.isolation.cleanup(&isolation_env).await;
                     record_spawn(self.metrics.as_ref(), "error");
                     return Err(map_turn_error(e));
                 }
             };
+            if let Err(e) = self.isolation.cleanup(&isolation_env).await {
+                record_spawn(self.metrics.as_ref(), "error");
+                return Err(e);
+            }
             let status = if outcome.cancelled { "cancelled" } else { "ok" };
             record_spawn(self.metrics.as_ref(), status);
 
@@ -804,5 +823,83 @@ mod tests {
             .await
             .expect("spawn");
         assert!(run.success);
+    }
+
+    #[tokio::test]
+    async fn isolation_prepare_cleanup_on_spawn() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtOrd};
+
+        use crate::isolation::{IsolationBackend, IsolationEnv};
+
+        struct CountingIsolation {
+            prepares: Arc<AtomicUsize>,
+            cleanups: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl IsolationBackend for CountingIsolation {
+            fn name(&self) -> &'static str {
+                "counting"
+            }
+
+            async fn prepare(&self, opts: &SpawnOpts) -> Result<IsolationEnv, MachiError> {
+                self.prepares.fetch_add(1, AtOrd::SeqCst);
+                Ok(IsolationEnv {
+                    cwd: None,
+                    label: opts.label.clone(),
+                })
+            }
+
+            async fn cleanup(&self, _env: &IsolationEnv) -> Result<(), MachiError> {
+                self.cleanups.fetch_add(1, AtOrd::SeqCst);
+                Ok(())
+            }
+        }
+
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("iso", "ok");
+        let prepares = Arc::new(AtomicUsize::new(0));
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let host =
+            InProcessHost::new(sampler, vec![]).with_isolation(Arc::new(CountingIsolation {
+                prepares: Arc::clone(&prepares),
+                cleanups: Arc::clone(&cleanups),
+            }));
+        host.spawn_agent(SpawnOpts::new("iso").with_label("child"))
+            .await
+            .expect("spawn");
+        assert_eq!(prepares.load(AtOrd::SeqCst), 1, "prepare once");
+        assert_eq!(cleanups.load(AtOrd::SeqCst), 1, "cleanup once");
+    }
+
+    #[tokio::test]
+    async fn isolation_prepare_fail_closed() {
+        use crate::isolation::{IsolationBackend, IsolationEnv, isolation_error};
+
+        struct FailPrepare;
+
+        #[async_trait]
+        impl IsolationBackend for FailPrepare {
+            fn name(&self) -> &'static str {
+                "fail"
+            }
+
+            async fn prepare(&self, _opts: &SpawnOpts) -> Result<IsolationEnv, MachiError> {
+                Err(isolation_error(self.name(), "no sandbox available"))
+            }
+
+            async fn cleanup(&self, _env: &IsolationEnv) -> Result<(), MachiError> {
+                Ok(())
+            }
+        }
+
+        let sampler = Arc::new(MockSampler::new());
+        let host = InProcessHost::new(sampler, vec![]).with_isolation(Arc::new(FailPrepare));
+        let err = host
+            .spawn_agent(SpawnOpts::new("x"))
+            .await
+            .expect_err("iso fail");
+        assert_eq!(err.code(), ErrorCode::HostIsolation);
+        assert_eq!(host.agents_spent(), 1, "slot reserved before prepare");
     }
 }

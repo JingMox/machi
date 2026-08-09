@@ -242,8 +242,9 @@ fn match_glob(pat: &[u8], text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn glob_semantics() {

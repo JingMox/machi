@@ -139,10 +139,12 @@ pub fn agents_md_path(cwd: impl AsRef<Path>) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use tempfile::tempdir;
+
     use super::*;
     use crate::definition::{Instructions, ToolPolicy};
-    use std::io::Write;
-    use tempfile::tempdir;
 
     fn sample_def() -> AgentDefinition {
         AgentDefinition {

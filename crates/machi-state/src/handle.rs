@@ -335,9 +335,10 @@ async fn actor_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use machi_types::{ToolCall, ToolCallId};
     use serde_json::json;
+
+    use super::*;
 
     #[tokio::test]
     async fn strict_blocks_dangling_result() {
@@ -371,8 +372,9 @@ mod tests {
 
     #[tokio::test]
     async fn restore_preserves_usage() {
-        use crate::ledger::UsageLedger;
         use machi_types::Usage;
+
+        use crate::ledger::UsageLedger;
 
         let mut usage = UsageLedger::new();
         usage.record_main(Usage::new(10, 5));
