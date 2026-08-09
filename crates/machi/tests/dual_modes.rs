@@ -540,4 +540,133 @@ mod dual {
             .expect("spawn");
         assert_eq!(run.output.as_str(), Some("forked"));
     }
+
+    // ── W1 Mode B contracts (budget conservation, await_user) ───────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b_await_user_pauses_then_resume_skips() {
+        use tempfile::tempdir;
+        let dir = tempdir().expect("tmp");
+        let path = dir.path().join("await.jsonl");
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("after-pause", "done");
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        let script = r#"
+            let meta = #{ name: "await-user", description: "pause then agent" };
+            await_user("user", "need human");
+            let a = agent("after-pause");
+            complete(#{ a: a });
+        "#;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let path1 = path.clone();
+        let outcome1 = run_workflow_on_host(
+            Arc::clone(&host),
+            WorkflowRunParams {
+                script: script.into(),
+                args: json!({}),
+                journal: Journal::new(Some(path1)),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(4),
+        )
+        .await
+        .expect("run1");
+        assert!(
+            matches!(outcome1, WorkflowOutcome::Paused { .. }),
+            "{outcome1:?}"
+        );
+
+        let journal = Journal::load(path.clone()).expect("load");
+        assert_eq!(journal.len(), 1, "only await_user journaled");
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let outcome2 = run_workflow_on_host(
+            host,
+            WorkflowRunParams {
+                script: script.into(),
+                args: json!({}),
+                journal,
+                host_tx: tx2,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(4),
+        )
+        .await
+        .expect("run2");
+        assert!(
+            matches!(outcome2, WorkflowOutcome::Completed { .. }),
+            "{outcome2:?}"
+        );
+        let journal2 = Journal::load(path).expect("load2");
+        assert_eq!(journal2.len(), 2, "await_user + agent");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b_budget_exceeded_on_host_does_not_double_charge_on_resume() {
+        use tempfile::tempdir;
+        // Host budget 0 → first agent fails BudgetExceeded; journal must stay empty so resume can retry with higher budget.
+        let dir = tempdir().expect("tmp");
+        let path = dir.path().join("budget.jsonl");
+        let sampler = Arc::new(MockSampler::new());
+        sampler.map_user_text("task", "ok");
+        let sampler_dyn: Arc<dyn LlmSampler> = sampler;
+        let host0: Arc<dyn SessionHost> =
+            Arc::new(InProcessHost::new(Arc::clone(&sampler_dyn), Vec::new()).with_agent_budget(0));
+        let script = r#"
+            let meta = #{ name: "budget-resume", description: "b" };
+            let a = agent("task");
+            complete(#{ a: a });
+        "#;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let path1 = path.clone();
+        let outcome1 = run_workflow_on_host(
+            host0,
+            WorkflowRunParams {
+                script: script.into(),
+                args: json!({}),
+                journal: Journal::new(Some(path1)),
+                host_tx: tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(8),
+        )
+        .await
+        .expect("run1");
+        assert!(
+            matches!(outcome1, WorkflowOutcome::BudgetExceeded { .. }),
+            "{outcome1:?}"
+        );
+        let journal = Journal::load(path.clone()).expect("load");
+        assert_eq!(
+            journal.len(),
+            0,
+            "budget failure must not journal interrupted agent"
+        );
+
+        let host1: Arc<dyn SessionHost> =
+            Arc::new(InProcessHost::new(sampler_dyn, Vec::new()).with_agent_budget(2));
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let outcome2 = run_workflow_on_host(
+            host1,
+            WorkflowRunParams {
+                script: script.into(),
+                args: json!({}),
+                journal: Journal::load(path.clone()).expect("load2"),
+                host_tx: tx2,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(8),
+        )
+        .await
+        .expect("run2");
+        assert!(
+            matches!(outcome2, WorkflowOutcome::Completed { .. }),
+            "{outcome2:?}"
+        );
+        assert_eq!(Journal::load(path).expect("final").len(), 1);
+    }
 }

@@ -41,6 +41,18 @@ pub struct Usage {
     /// Total tokens when provided by the provider.
     #[serde(default)]
     pub total_tokens: u32,
+    /// Cache-read tokens (provider-specific; ledger convenience field).
+    #[serde(default)]
+    pub cache_read_tokens: u32,
+    /// Cache-creation / write tokens.
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
+    /// Reasoning tokens (top-level mirror of completion details when set).
+    #[serde(default)]
+    pub reasoning_tokens: u32,
+    /// Provider API wall time for this sample, when known (milliseconds).
+    #[serde(default)]
+    pub api_duration_ms: u64,
     /// Prompt details.
     #[serde(default, alias = "prompt_tokens_details")]
     pub prompt_details: PromptTokensDetails,
@@ -57,6 +69,10 @@ impl Usage {
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            reasoning_tokens: 0,
+            api_duration_ms: 0,
             prompt_details: PromptTokensDetails {
                 cached_tokens: 0,
                 audio_tokens: 0,
@@ -75,6 +91,10 @@ impl Usage {
             input_tokens,
             output_tokens,
             total_tokens: input_tokens.saturating_add(output_tokens),
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            reasoning_tokens: 0,
+            api_duration_ms: 0,
             prompt_details: PromptTokensDetails {
                 cached_tokens: 0,
                 audio_tokens: 0,
@@ -104,6 +124,12 @@ impl Add for Usage {
             input_tokens: self.input_tokens.saturating_add(rhs.input_tokens),
             output_tokens: self.output_tokens.saturating_add(rhs.output_tokens),
             total_tokens: self.total_tokens.saturating_add(rhs.total_tokens),
+            cache_read_tokens: self.cache_read_tokens.saturating_add(rhs.cache_read_tokens),
+            cache_creation_tokens: self
+                .cache_creation_tokens
+                .saturating_add(rhs.cache_creation_tokens),
+            reasoning_tokens: self.reasoning_tokens.saturating_add(rhs.reasoning_tokens),
+            api_duration_ms: self.api_duration_ms.saturating_add(rhs.api_duration_ms),
             prompt_details: PromptTokensDetails {
                 cached_tokens: self
                     .prompt_details

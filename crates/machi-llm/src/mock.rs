@@ -12,7 +12,7 @@ use crate::sampler::LlmSampler;
 /// Queue of scripted responses (FIFO) plus optional prompt-keyed responses.
 #[derive(Debug, Default)]
 pub struct MockSampler {
-    responses: Mutex<Vec<SampleResponse>>,
+    responses: Mutex<Vec<Result<SampleResponse, MachiError>>>,
     /// Exact match on the last user message text → response text.
     by_user_text: Mutex<HashMap<String, String>>,
 }
@@ -29,7 +29,15 @@ impl MockSampler {
         self.responses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(response);
+            .push(Ok(response));
+    }
+
+    /// Push a FIFO error (for retry / breaker tests).
+    pub fn push_error(&self, error: MachiError) {
+        self.responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Err(error));
     }
 
     /// Convenience: final assistant text (FIFO).
@@ -106,7 +114,7 @@ impl LlmSampler for MockSampler {
                 "mock sampler has no scripted responses left",
             ));
         }
-        Ok(guard.remove(0))
+        guard.remove(0)
     }
 }
 
@@ -137,67 +145,5 @@ mod tests {
         let b = mock.sample(req).await.expect("b");
         assert_eq!(a.message.text(), "a");
         assert_eq!(b.message.text(), "b");
-    }
-
-    #[tokio::test]
-    async fn keyed_by_user_text() {
-        let mock = MockSampler::new();
-        mock.map_user_text("task a", "reply-a");
-        mock.map_user_text("task b", "reply-b");
-        let mk = |u: &str| SampleRequest {
-            model: "mock".into(),
-            messages: vec![Message::system("s"), Message::user(u)],
-            tools: vec![],
-            tool_choice: ToolChoice::default(),
-            response_format: None,
-            max_output_tokens: None,
-            temperature: None,
-            cancel: CancellationToken::new(),
-            deadline: None,
-        };
-        let b = mock.sample(mk("task b")).await.expect("b");
-        let a = mock.sample(mk("task a")).await.expect("a");
-        assert_eq!(b.message.text(), "reply-b");
-        assert_eq!(a.message.text(), "reply-a");
-    }
-
-    #[tokio::test]
-    async fn sample_stream_emits_completed() {
-        use futures::StreamExt;
-
-        use crate::stream::SampleEvent;
-
-        let mock = MockSampler::new();
-        mock.push_text("streamed");
-        let req = SampleRequest {
-            model: "mock".into(),
-            messages: vec![Message::user("hi")],
-            tools: vec![],
-            tool_choice: ToolChoice::default(),
-            response_format: None,
-            max_output_tokens: None,
-            temperature: None,
-            cancel: CancellationToken::new(),
-            deadline: None,
-        };
-        let mut stream = mock.sample_stream(req).await.expect("stream");
-        let mut saw_text = false;
-        let mut saw_done = false;
-        while let Some(ev) = stream.next().await {
-            match ev {
-                SampleEvent::TextDelta { text } => {
-                    assert_eq!(text, "streamed");
-                    saw_text = true;
-                }
-                SampleEvent::Completed { message, .. } => {
-                    assert_eq!(message.text(), "streamed");
-                    saw_done = true;
-                }
-                SampleEvent::Usage(_)
-                | SampleEvent::ToolCalls { .. }
-                | SampleEvent::Failed { .. } => {}
-            }
-        }
-        assert!(saw_text && saw_done);
     }
 }

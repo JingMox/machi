@@ -21,7 +21,11 @@ pub mod validate;
 
 pub use engine::{WorkflowRunParams, run_workflow};
 pub use host::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
-pub use journal::{Journal, JournalEntry, JournalError, request_hash};
+pub use journal::{
+    HOST_ERROR_KEY, JOURNAL_VERSION_HEADER, Journal, JournalEntry, JournalError, MAX_JOURNAL_BYTES,
+    MAX_JOURNAL_ENTRIES, canonical_json, host_error_message, host_error_sentinel,
+    is_host_error_sentinel, request_hash,
+};
 pub use meta::{MetaError, WorkflowMeta, extract_meta};
 pub use run::{PauseKind, WorkflowOutcome};
 pub use store::{

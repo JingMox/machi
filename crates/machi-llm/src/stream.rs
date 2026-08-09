@@ -14,10 +14,36 @@ pub enum SampleEvent {
         /// Delta text.
         text: String,
     },
-    /// Full tool-call snapshot (v1: emitted once when known).
+    /// Incremental reasoning / chain-of-thought channel (when providers split channels).
+    ReasoningDelta {
+        /// Delta text.
+        text: String,
+    },
+    /// Incremental tool-call argument fragment.
+    ToolCallDelta {
+        /// Tool call index within the assistant message.
+        index: u32,
+        /// Partial JSON / text args.
+        arguments_delta: String,
+    },
+    /// Full tool-call snapshot (emitted once when known, or after deltas coalesce).
     ToolCalls {
         /// Complete assistant message carrying tool calls.
         message: Message,
+    },
+    /// First response bytes / headers observed.
+    ResponseStarted {
+        /// Cache-read tokens if known at start.
+        cache_read: Option<u32>,
+        /// Cache-creation tokens if known at start.
+        cache_creation: Option<u32>,
+    },
+    /// Decorator is about to retry a failed sample.
+    Retrying {
+        /// 1-based attempt about to run.
+        attempt: u32,
+        /// Short reason (`rate_limited`, `http_503`, …).
+        reason: String,
     },
     /// Usage totals (may arrive at end).
     Usage(Usage),
