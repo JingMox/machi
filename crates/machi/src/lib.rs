@@ -98,9 +98,10 @@ pub use machi_runtime::{
 pub use machi_state as state;
 #[cfg(feature = "state")]
 pub use machi_state::{
-    ChatPersistence, ChatStateHandle, ChatStateSnapshot, DEFAULT_SESSIONS_DIR, FilePersistence,
-    InMemoryMemory, MemoryItem, MemoryPersistence, MemoryPort, NullMemory, NullPersistence,
-    UsageLedger, check_tool_pairing, default_session_path, messages_only,
+    ChatPersistence, ChatStateHandle, ChatStateSnapshot, CompactionRecord, DEFAULT_SESSIONS_DIR,
+    DEFAULT_SNAPSHOT_EVERY, EVENTS_HEADER, FilePersistence, InMemoryMemory, JsonlPersistence,
+    MemoryItem, MemoryPersistence, MemoryPort, NullMemory, NullPersistence, UsageLedger,
+    check_tool_pairing, default_session_path, messages_only, session_jsonl_dir,
 };
 #[cfg(feature = "toolkit")]
 pub use machi_toolkit as toolkit;

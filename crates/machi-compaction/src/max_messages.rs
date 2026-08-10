@@ -2,6 +2,7 @@
 
 use machi_types::{ErrorCode, MachiError, Message, Role};
 
+use crate::select::{apply_range, select_compaction_range, tool_pair_invariant_holds};
 use crate::strategy::{CompactionOutcome, CompactionStrategy};
 
 /// Drop oldest non-system messages until `max` remains.
@@ -55,11 +56,26 @@ impl CompactionStrategy for MaxMessages {
 }
 
 /// Shared algorithm used by runtime `VecConversationState` and this strategy.
+///
+/// Uses [`select_compaction_range`] so tool-result runs are never split mid-pair.
 #[must_use]
 pub fn compact_max_messages(messages: Vec<Message>, max_messages: usize) -> Vec<Message> {
     if max_messages == 0 || messages.len() <= max_messages {
         return messages;
     }
+    let Some(range) = select_compaction_range(&messages, max_messages) else {
+        // Fallback: previous forward-walk from tail when select declines.
+        return compact_max_messages_legacy(messages, max_messages);
+    };
+    let out = apply_range(messages, range, None);
+    debug_assert!(
+        tool_pair_invariant_holds(&out),
+        "compact_max_messages must preserve tool-pair invariant"
+    );
+    out
+}
+
+fn compact_max_messages_legacy(messages: Vec<Message>, max_messages: usize) -> Vec<Message> {
     let (system, rest) = split_leading_system(&messages);
     let keep_rest = max_messages.saturating_sub(usize::from(system.is_some()));
     if rest.len() <= keep_rest {
@@ -71,7 +87,7 @@ pub fn compact_max_messages(messages: Vec<Message>, max_messages: usize) -> Vec<
             break;
         };
         if msg.role == Role::Tool && start > 0 {
-            start = start.saturating_sub(1);
+            start = start.saturating_add(1); // snap forward past tools (not backward)
             continue;
         }
         break;

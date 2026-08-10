@@ -942,6 +942,7 @@ name = "machi-compaction"
 version = "1.0.0"
 dependencies = [
  "machi-types",
+ "serde_json",
 ]
 
 [[package]]
