@@ -1,7 +1,8 @@
 //! Conversation state abstractions.
 
 use machi_compaction::max_messages::compact_max_messages;
-use machi_types::Message;
+use machi_protocol::{MESSAGE_FRAME_TOKENS, estimate_image_tokens, estimate_text_tokens};
+use machi_types::{ContentPart, Message};
 
 /// Mutable conversation backing a turn or session.
 pub trait ConversationState: Send {
@@ -11,13 +12,40 @@ pub trait ConversationState: Send {
     fn append(&mut self, message: Message);
     /// Replace the entire message list (compaction / restore).
     fn replace(&mut self, messages: Vec<Message>);
-    /// Rough token estimate for compaction triggers (bytes/4 heuristic by default).
+    /// Token estimate for compaction triggers (aligned with preflight, W3.2).
+    ///
+    /// Includes framing, multimodal parts, and tool-call argument JSON.
     fn token_estimate(&self) -> u64 {
-        self.messages()
-            .iter()
-            .map(|m| (m.text().len() as u64) / 4 + 1)
-            .sum()
+        u64::from(estimate_messages_tokens(self.messages()))
     }
+}
+
+/// Shared estimator used by [`ConversationState::token_estimate`] and turn preflight.
+#[must_use]
+pub fn estimate_messages_tokens(messages: &[Message]) -> u32 {
+    messages
+        .iter()
+        .fold(0u32, |acc, m| acc.saturating_add(estimate_one_message(m)))
+}
+
+fn estimate_one_message(m: &Message) -> u32 {
+    let mut n = MESSAGE_FRAME_TOKENS;
+    if m.parts.is_empty() {
+        n = n.saturating_add(estimate_text_tokens(&m.text()));
+    } else {
+        for part in &m.parts {
+            n = n.saturating_add(match part {
+                ContentPart::Text { text } => estimate_text_tokens(text),
+                ContentPart::Image { .. } => estimate_image_tokens(),
+                _ => 0,
+            });
+        }
+    }
+    for call in &m.tool_calls {
+        n = n.saturating_add(estimate_text_tokens(&call.name));
+        n = n.saturating_add(estimate_text_tokens(&call.arguments.to_string()));
+    }
+    n
 }
 
 /// In-memory conversation state.
