@@ -24,7 +24,7 @@ pub use metadata::{
 pub use registry::{CapabilityMode, ToolRegistry};
 pub use source::{StaticToolSource, ToolSource, merge_arc_sources, merge_tool_sources};
 pub use stream::{
-    ToolProgress, ToolStream, ToolStreamItem, drain_terminal, drain_with_progress, terminal_only,
-    with_progress,
+    MAX_DELTA_BYTES, MAX_FRAME_BYTES, ToolProgress, ToolStream, ToolStreamItem, drain_terminal,
+    drain_with_progress, partial_progress_frames, terminal_only, with_progress,
 };
 pub use tool::{DynTool, SharedTool, ToolDefinition, ToolResult};

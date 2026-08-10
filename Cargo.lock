@@ -986,6 +986,7 @@ dependencies = [
  "machi-compaction",
  "machi-llm",
  "machi-obs",
+ "machi-protocol",
  "machi-state",
  "machi-toolkit",
  "machi-tools",

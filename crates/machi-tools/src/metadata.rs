@@ -75,6 +75,9 @@ pub struct ToolMetadata {
     pub timeout: Option<Duration>,
     /// Capability flags required/advertised.
     pub capabilities: Vec<CapabilityFlag>,
+    /// Optional per-tool concurrency cap (alongside [`ConcurrencyMode`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<usize>,
 }
 
 impl Default for ToolMetadata {
@@ -85,6 +88,7 @@ impl Default for ToolMetadata {
             interrupt: InterruptBehavior::Cancel,
             timeout: None,
             capabilities: Vec::new(),
+            max_concurrency: None,
         }
     }
 }
@@ -131,7 +135,15 @@ impl ToolMetadata {
             interrupt: InterruptBehavior::Cancel,
             timeout: Some(timeout),
             capabilities: vec![CapabilityFlag::Execute, CapabilityFlag::Write],
+            max_concurrency: Some(1),
         }
+    }
+
+    /// Set per-tool concurrency cap.
+    #[must_use]
+    pub const fn with_max_concurrency(mut self, n: Option<usize>) -> Self {
+        self.max_concurrency = n;
+        self
     }
 
     /// True when the tool is admissible under a read-only capability mode.

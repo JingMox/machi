@@ -10,12 +10,14 @@
 pub mod gates;
 pub mod host;
 pub mod isolation;
+pub mod lifecycle;
 pub mod metrics;
 pub mod schema;
 pub mod session;
 pub mod side_effects;
 pub mod spawn_tool;
 pub mod state;
+pub mod stationarity;
 pub mod turn;
 pub mod workflow_host;
 
@@ -25,6 +27,11 @@ pub use host::{
     SessionHost, SpawnOpts,
 };
 pub use isolation::{InProcessIsolation, IsolationBackend, IsolationEnv, isolation_error};
+pub use lifecycle::{LifecycleFanout, NoopLifecycle, TurnAbortReason, TurnLifecycleContributor};
+pub use stationarity::{
+    HARD_STOP_THRESHOLD, NUDGE_THRESHOLD, StationarityAction, StationarityTracker,
+    fingerprint_batch, nudge_message,
+};
 // re-export compaction strategy surface used by hosts
 pub use machi_compaction::{CompactionOutcome, CompactionStrategy, MaxMessages, TokenThreshold};
 pub use metrics::{
