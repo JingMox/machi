@@ -518,30 +518,38 @@ async fn drain_interjections(state: &mut dyn ConversationState, options: &TurnOp
 
 /// Estimate tokens for a conversation using protocol heuristics.
 #[must_use]
+#[allow(
+    clippy::excessive_nesting,
+    reason = "message part/tool fold is a shallow match"
+)]
 pub fn estimate_conversation_tokens(messages: &[Message]) -> u32 {
-    messages.iter().fold(0u32, |acc, m| {
-        let mut n = MESSAGE_FRAME_TOKENS;
-        if m.parts.is_empty() {
-            n = n.saturating_add(estimate_text_tokens(&m.text()));
-        } else {
-            for part in &m.parts {
-                match part {
-                    ContentPart::Text { text } => {
-                        n = n.saturating_add(estimate_text_tokens(text));
-                    }
-                    ContentPart::Image { .. } => {
-                        n = n.saturating_add(estimate_image_tokens());
-                    }
-                    _ => {}
-                }
-            }
+    messages
+        .iter()
+        .fold(0u32, |acc, m| acc.saturating_add(estimate_one_message(m)))
+}
+
+fn estimate_one_message(m: &Message) -> u32 {
+    let mut n = MESSAGE_FRAME_TOKENS;
+    if m.parts.is_empty() {
+        n = n.saturating_add(estimate_text_tokens(&m.text()));
+    } else {
+        for part in &m.parts {
+            n = n.saturating_add(estimate_part(part));
         }
-        for call in &m.tool_calls {
-            n = n.saturating_add(estimate_text_tokens(&call.name));
-            n = n.saturating_add(estimate_text_tokens(&call.arguments.to_string()));
-        }
-        acc.saturating_add(n)
-    })
+    }
+    for call in &m.tool_calls {
+        n = n.saturating_add(estimate_text_tokens(&call.name));
+        n = n.saturating_add(estimate_text_tokens(&call.arguments.to_string()));
+    }
+    n
+}
+
+fn estimate_part(part: &ContentPart) -> u32 {
+    match part {
+        ContentPart::Text { text } => estimate_text_tokens(text),
+        ContentPart::Image { .. } => estimate_image_tokens(),
+        _ => 0,
+    }
 }
 
 enum FinalStep {

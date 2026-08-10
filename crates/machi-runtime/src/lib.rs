@@ -49,7 +49,7 @@ pub use session::Session;
 pub use side_effects::WorkflowSideEffects;
 pub use spawn_tool::SpawnAgentTool;
 pub use state::{ConversationState, VecConversationState};
-pub use turn::{TurnInput, TurnOptions, TurnOutcome, TurnRuntime};
+pub use turn::{TurnInput, TurnOptions, TurnOutcome, TurnRuntime, estimate_conversation_tokens};
 pub use workflow_host::{
     run_workflow_configured, run_workflow_on_host, run_workflow_on_host_with_metrics,
 };
