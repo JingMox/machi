@@ -61,7 +61,7 @@ pub struct SpawnOpts {
     pub fork_context: bool,
     /// Parent messages injected when [`Self::fork_context`] is true.
     pub fork_messages: Option<Vec<Message>>,
-    /// Resume a prior nested run id (unsupported on default host → error).
+    /// Replay a completed workflow run id via host [`WorkflowRunStore`] (charges budget).
     pub resume_from: Option<String>,
     /// Max output tokens hint for the child sample.
     pub max_output_tokens: Option<u64>,
@@ -161,7 +161,7 @@ impl SpawnOpts {
         self
     }
 
-    /// Request resume of a prior nested run (unsupported on default host → error).
+    /// Replay a completed run from the host [`WorkflowRunStore`] (still charges agent budget).
     #[must_use]
     pub fn with_resume_from(mut self, id: impl Into<String>) -> Self {
         self.resume_from = Some(id.into());
@@ -443,10 +443,7 @@ impl InProcessHost {
         };
         match rec.status {
             WorkflowRunStatus::Completed => {
-                let output = rec
-                    .message
-                    .clone()
-                    .map_or_else(|| Value::String(rec.name.clone()), Value::String);
+                let output = rec.result.clone().unwrap_or(Value::Null);
                 Ok(Some(AgentRunResult {
                     agent_id: AgentId::generate(),
                     label: opts.label.clone().or_else(|| Some(rec.name.clone())),
@@ -574,13 +571,15 @@ impl InProcessHost {
                     "spawn cancelled before start",
                 ));
             }
-            if let Some(resumed) = self.try_resume(&opts)? {
-                return Ok(resumed);
-            }
             Self::check_fork_opts(&opts, self.parent_handle.is_some())?;
             self.check_depth(opts.depth)?;
+            // Budget + concurrency apply to resume_from (no free spawn path).
             let _permit = self.try_acquire_concurrency()?;
             self.reserve_slot()?;
+            if let Some(resumed) = self.try_resume(&opts)? {
+                record_spawn(self.metrics.as_ref(), "ok");
+                return Ok(resumed);
+            }
 
             let isolation_env = self.isolation.prepare(&opts).await?;
             let started = Instant::now();
@@ -845,16 +844,20 @@ mod tests {
         let sampler = Arc::new(MockSampler::new());
         let store = Arc::new(MemoryWorkflowRunStore::new());
         let mut rec = WorkflowRunRecord::new_running("r1", "wf", PathBuf::from("/tmp/j.jsonl"));
-        rec.apply_outcome(&WorkflowOutcome::Completed { result: json!({}) });
-        rec.message = Some("cached-output".into());
+        rec.apply_outcome(&WorkflowOutcome::Completed {
+            result: json!({"ok": true, "v": 1}),
+        });
         store.put(rec).expect("put");
-        let host = InProcessHost::new(sampler, vec![]).with_run_store(store);
+        let host = InProcessHost::new(sampler, vec![])
+            .with_agent_budget(2)
+            .with_run_store(store);
         let run = host
             .spawn_agent(SpawnOpts::new("unused").with_resume_from("r1"))
             .await
             .expect("resume");
         assert!(run.success);
-        assert_eq!(run.output, Value::String("cached-output".into()));
+        assert_eq!(run.output, json!({"ok": true, "v": 1}));
+        assert_eq!(host.agents_spent(), 1, "resume_from charges budget");
     }
 
     #[tokio::test]

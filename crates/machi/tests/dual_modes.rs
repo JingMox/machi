@@ -725,6 +725,12 @@ mod dual {
             .expect("resume");
         assert!(resumed.success);
         assert_eq!(resumed.label.as_deref(), Some("done-wf"));
+        assert_eq!(
+            resumed.output,
+            serde_json::json!({"ok": true}),
+            "resume_from must return stored Completed.result"
+        );
+        assert_eq!(host.agents_spent(), 2, "fork + resume each charge budget");
     }
 
     // ── W4 state / ledger ───────────────────────────────────────────────

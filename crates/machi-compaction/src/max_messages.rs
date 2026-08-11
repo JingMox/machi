@@ -1,6 +1,6 @@
 //! Keep at most N messages, preserving leading system and tail.
 
-use machi_types::{ErrorCode, MachiError, Message, Role};
+use machi_types::{ErrorCode, MachiError, Message};
 
 use crate::select::{apply_range, select_compaction_range, tool_pair_invariant_holds};
 use crate::strategy::{CompactionOutcome, CompactionStrategy};
@@ -46,10 +46,12 @@ impl CompactionStrategy for MaxMessages {
                 strategy: self.name(),
             });
         }
+        let before = messages.len();
         let compacted = compact_max_messages(messages, self.max);
+        let changed = compacted.len() != before;
         Ok(CompactionOutcome {
             messages: compacted,
-            changed: true,
+            changed,
             strategy: self.name(),
         })
     }
@@ -58,14 +60,14 @@ impl CompactionStrategy for MaxMessages {
 /// Shared algorithm used by runtime `VecConversationState` and this strategy.
 ///
 /// Uses [`select_compaction_range`] so tool-result runs are never split mid-pair.
+/// When no safe split exists, returns the input unchanged (same as other strategies).
 #[must_use]
 pub fn compact_max_messages(messages: Vec<Message>, max_messages: usize) -> Vec<Message> {
     if max_messages == 0 || messages.len() <= max_messages {
         return messages;
     }
     let Some(range) = select_compaction_range(&messages, max_messages) else {
-        // Fallback: previous forward-walk from tail when select declines.
-        return compact_max_messages_legacy(messages, max_messages);
+        return messages;
     };
     let out = apply_range(messages, range, None);
     debug_assert!(
@@ -73,38 +75,6 @@ pub fn compact_max_messages(messages: Vec<Message>, max_messages: usize) -> Vec<
         "compact_max_messages must preserve tool-pair invariant"
     );
     out
-}
-
-fn compact_max_messages_legacy(messages: Vec<Message>, max_messages: usize) -> Vec<Message> {
-    let (system, rest) = split_leading_system(&messages);
-    let keep_rest = max_messages.saturating_sub(usize::from(system.is_some()));
-    if rest.len() <= keep_rest {
-        return messages;
-    }
-    let mut start = rest.len().saturating_sub(keep_rest);
-    while start < rest.len() {
-        let Some(msg) = rest.get(start) else {
-            break;
-        };
-        if msg.role == Role::Tool && start > 0 {
-            start = start.saturating_add(1); // snap forward past tools (not backward)
-            continue;
-        }
-        break;
-    }
-    let mut out = Vec::with_capacity(max_messages);
-    if let Some(sys) = system {
-        out.push(sys);
-    }
-    out.extend(rest.into_iter().skip(start));
-    out
-}
-
-fn split_leading_system(messages: &[Message]) -> (Option<Message>, Vec<Message>) {
-    match messages.split_first() {
-        Some((first, rest)) if first.role == Role::System => (Some(first.clone()), rest.to_vec()),
-        _ => (None, messages.to_vec()),
-    }
 }
 
 #[cfg(test)]
