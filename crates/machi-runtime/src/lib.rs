@@ -1,4 +1,6 @@
 //! Turn runtime and session host for the Machi kernel.
+//!
+//! Maturity: **core** (turn, host, session, spawn); **stable** workflow host adapter.
 
 #![forbid(unsafe_code)]
 // Dev-dependencies (toolkit, tempfile) are only used by integration tests.

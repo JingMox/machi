@@ -163,7 +163,7 @@ pub fn decide_retry(policy: &RetryPolicy, err: &MachiError, ctx: &RetryContext) 
                 reason: "empty_response".into(),
             };
         }
-        ErrorCode::LlmRateLimit | ErrorCode::LlmRateLimited => {
+        ErrorCode::LlmRateLimit => {
             if ctx.rate_limit_retries >= policy.rate_limit_max {
                 return RetryDecision::Fatal;
             }

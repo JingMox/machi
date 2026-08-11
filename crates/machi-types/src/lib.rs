@@ -3,6 +3,8 @@
 //! This crate is intentionally free of network and provider dependencies so
 //! orchestration, tools, and runtimes can share one model without pulling
 //! HTTP stacks into the bottom of the DAG.
+//!
+//! Maturity: **core**.
 
 #![forbid(unsafe_code)]
 

@@ -2,6 +2,8 @@
 //!
 //! An [`Agent`] does not run a `ReAct` loop. [`machi_runtime::TurnRuntime`]
 //! (or a product host) executes turns against an agent.
+//!
+//! Maturity: **core** (definitions, discovery, registry, builtins).
 
 #![forbid(unsafe_code)]
 
@@ -22,9 +24,9 @@ pub use definition::{
     AgentDefinition, AgentSource, CompletionRequirement, Instructions, ToolPolicy,
 };
 pub use discovery::{
-    PROJECT_AGENTS_DIR, USER_AGENTS_DIR, by_name, by_name_in_dir, by_name_resolved,
-    discover_in_dir, discover_project, discover_user, load_file, parse_definition_markdown,
-    project_agent_dirs, resolve_agents, user_agents_dir,
+    PROJECT_AGENTS_DIR, USER_AGENTS_DIR, by_name_in_dir, by_name_resolved, discover_in_dir,
+    discover_project, discover_user, load_file, parse_definition_markdown, project_agent_dirs,
+    resolve_agents, user_agents_dir,
 };
 pub use instance::Agent;
 pub use prompt::{

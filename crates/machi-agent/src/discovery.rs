@@ -301,32 +301,6 @@ pub fn by_name_resolved(name: &str, cwd: impl AsRef<Path>) -> Result<AgentDefini
         })
 }
 
-/// Convenience: `{cwd}/.machi/agents` then optional extra roots (legacy).
-///
-/// Prefer [`by_name_resolved`] for full precedence.
-///
-/// # Errors
-///
-/// Not found after searching all roots.
-pub fn by_name(name: &str, roots: &[PathBuf]) -> Result<AgentDefinition, MachiError> {
-    for root in roots {
-        let dir = if root.ends_with(PROJECT_AGENTS_DIR) {
-            root.clone()
-        } else {
-            root.join(PROJECT_AGENTS_DIR)
-        };
-        if dir.is_dir()
-            && let Ok(def) = by_name_in_dir(&dir, name)
-        {
-            return Ok(def);
-        }
-    }
-    Err(MachiError::new(
-        ErrorCode::AgentNotFound,
-        format!("agent not found: {name}"),
-    ))
-}
-
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

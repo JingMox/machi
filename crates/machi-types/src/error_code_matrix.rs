@@ -344,22 +344,6 @@ mod error_code_matrix {
         let _ = c.default_retry();
     }
 
-    #[test]
-    fn code_LlmRateLimited_as_str_nonempty_and_domain() {
-        let c = ErrorCode::LlmRateLimited;
-        let s = c.as_str();
-        assert!(!s.is_empty());
-        assert!(!s.contains(' '));
-        let d = c.domain();
-        assert!(!d.is_empty());
-        if c != ErrorCode::Internal {
-            assert!(
-                s == d || s.starts_with(&format!("{d}.")),
-                "{s} vs domain {d}"
-            );
-        }
-        let _ = c.default_retry();
-    }
 
     #[test]
     fn code_LlmIdleTimeout_as_str_nonempty_and_domain() {
@@ -894,7 +878,6 @@ mod error_code_matrix {
             ErrorCode::LlmInvalidResponse,
             ErrorCode::LlmAuth,
             ErrorCode::LlmRateLimit,
-            ErrorCode::LlmRateLimited,
             ErrorCode::LlmIdleTimeout,
             ErrorCode::LlmEmptyResponse,
             ErrorCode::LlmTruncated,

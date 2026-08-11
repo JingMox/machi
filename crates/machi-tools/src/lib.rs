@@ -1,4 +1,6 @@
 //! Tool contracts, streaming protocol, and concurrent dispatch for Machi.
+//!
+//! Maturity: **core**.
 
 #![forbid(unsafe_code)]
 

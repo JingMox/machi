@@ -60,8 +60,6 @@ pub enum ErrorCode {
     LlmAuth,
     /// LLM rate limited.
     LlmRateLimit,
-    /// Alias-style rate limited code (same domain; prefer [`Self::LlmRateLimit`]).
-    LlmRateLimited,
     /// Stream/sample idle timeout between chunks.
     LlmIdleTimeout,
     /// Provider returned an empty completion (no text / tool calls).
@@ -162,7 +160,6 @@ impl ErrorCode {
             Self::LlmInvalidResponse => "llm.invalid_response",
             Self::LlmAuth => "llm.auth",
             Self::LlmRateLimit => "llm.rate_limit",
-            Self::LlmRateLimited => "llm.rate_limited",
             Self::LlmIdleTimeout => "llm.idle_timeout",
             Self::LlmEmptyResponse => "llm.empty_response",
             Self::LlmTruncated => "llm.truncated",
@@ -218,7 +215,6 @@ impl ErrorCode {
             | Self::LlmInvalidResponse
             | Self::LlmAuth
             | Self::LlmRateLimit
-            | Self::LlmRateLimited
             | Self::LlmIdleTimeout
             | Self::LlmEmptyResponse
             | Self::LlmTruncated => "llm",
@@ -255,10 +251,7 @@ impl ErrorCode {
     #[must_use]
     pub const fn default_retry(self) -> RetryClass {
         match self {
-            Self::LlmRateLimit
-            | Self::LlmRateLimited
-            | Self::LlmProvider
-            | Self::LlmEmptyResponse => RetryClass::Backoff,
+            Self::LlmRateLimit | Self::LlmProvider | Self::LlmEmptyResponse => RetryClass::Backoff,
             Self::LlmAuth => RetryClass::AuthRefresh,
             Self::ToolTimeout => RetryClass::Immediate,
             Self::ToolCancelled

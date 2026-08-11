@@ -4,6 +4,8 @@
 //! - Decorators: [`RetryingSampler`], [`BreakerSampler`] (W2).
 //! - Feature `openai`: [`OpenAiCompatSampler`] HTTP client.
 //! - Feature `ollama`: [`OllamaSampler`] HTTP client.
+//!
+//! Maturity: **core** (sampler, retry, breaker); **stable** HTTP clients behind features.
 
 #![forbid(unsafe_code)]
 
