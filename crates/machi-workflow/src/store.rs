@@ -70,6 +70,9 @@ pub struct WorkflowRunRecord {
     /// Last error or pause message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Completed workflow result payload (for host `resume_from` replay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 impl WorkflowRunRecord {
@@ -92,6 +95,7 @@ impl WorkflowRunRecord {
             updated_at_ms: now,
             pause_kind: None,
             message: None,
+            result: None,
         }
     }
 
@@ -103,15 +107,23 @@ impl WorkflowRunRecord {
             WorkflowOutcome::Paused { kind, message } => {
                 self.pause_kind = Some(*kind);
                 self.message = Some(message.clone());
+                self.result = None;
             }
             WorkflowOutcome::BudgetExceeded { message }
             | WorkflowOutcome::Failed { error: message } => {
                 self.pause_kind = None;
                 self.message = Some(message.clone());
+                self.result = None;
             }
-            WorkflowOutcome::Completed { .. } | WorkflowOutcome::Cancelled => {
+            WorkflowOutcome::Completed { result } => {
                 self.pause_kind = None;
                 self.message = None;
+                self.result = Some(result.clone());
+            }
+            WorkflowOutcome::Cancelled => {
+                self.pause_kind = None;
+                self.message = None;
+                self.result = None;
             }
         }
     }

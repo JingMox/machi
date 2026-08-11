@@ -279,9 +279,8 @@ fn reserve(
 
 /// Map workflow [`AgentOpts`] → host [`SpawnOpts`] without silent field drops.
 ///
-/// Fields the default host does not implement (`fork_context`, `resume_from`)
-/// are forwarded; [`crate::host::InProcessHost`] fail-closes with
-/// [`machi_types::ErrorCode::HostUnsupported`].
+/// `fork_context` requires host `parent_handle` or explicit `fork_messages`.
+/// `resume_from` requires host `run_store` and a completed [`WorkflowRunStore`] row.
 fn map_host_spawn_error(e: machi_types::MachiError) -> HostError {
     use machi_types::ErrorCode;
     match e.code() {
