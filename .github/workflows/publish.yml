@@ -8,6 +8,18 @@ jobs:
   publish:
     uses: qntx/workflows/.github/workflows/publish-crates.yml@main
     with:
-      packages: "machi-derive machi"
+      packages: >-
+        machi-types
+        machi-protocol
+        machi-obs
+        machi-tools
+        machi-llm
+        machi-agent
+        machi-workflow
+        machi-state
+        machi-compaction
+        machi-toolkit
+        machi-runtime
+        machi
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

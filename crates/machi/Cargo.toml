@@ -61,5 +61,15 @@ required-features = ["workflow", "obs"]
 name = "workflow_ollama"
 required-features = ["ollama", "workflow"]
 
+# Integration suites need optional features; skip under bare `cargo test`
+# (publish reusable workflow). CI uses --all-features and still runs them.
+[[test]]
+name = "stress"
+required-features = ["full"]
+
+[[test]]
+name = "dual_modes"
+required-features = ["full"]
+
 [lints]
 workspace = true
