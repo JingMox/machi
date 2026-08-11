@@ -7,7 +7,6 @@ use machi_tools::registry::CapabilityMode;
 use machi_tools::{DynTool, ToolCallContext, ToolMetadata, ToolResult};
 use machi_types::{ErrorCode, MachiError};
 use serde_json::{Value, json};
-use tokio_util::sync::CancellationToken;
 
 use crate::host::{SessionHost, SpawnOpts};
 
@@ -143,10 +142,10 @@ impl DynTool for SpawnAgentTool {
             .get("label")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let capability_mode = arguments
-            .get("capability_mode")
-            .and_then(Value::as_str)
-            .map_or(self.default_capability, parse_capability);
+        let capability_mode = match arguments.get("capability_mode").and_then(Value::as_str) {
+            Some(mode) => parse_capability(mode)?,
+            None => self.default_capability,
+        };
         let max_steps = arguments
             .get("max_steps")
             .and_then(Value::as_u64)
@@ -172,12 +171,8 @@ impl DynTool for SpawnAgentTool {
         let output_schema = arguments.get("output_schema").cloned();
         let max_output_tokens = arguments.get("max_output_tokens").and_then(Value::as_u64);
 
-        // Child cancel is linked to the parent turn token when present.
-        let child_cancel = if ctx.cancel.is_cancelled() {
-            CancellationToken::new()
-        } else {
-            ctx.cancel.child_token()
-        };
+        // Always link to the parent token (never invent a root token — TOCTOU-safe).
+        let child_cancel = ctx.cancel.child_token();
 
         // Top-level session → depth 0; host-spawned agent at d → child at d+1.
         let depth = ctx.spawn_depth().map_or(0, |d| d.saturating_add(1));
@@ -230,12 +225,13 @@ impl DynTool for SpawnAgentTool {
     }
 }
 
-fn parse_capability(mode: &str) -> CapabilityMode {
-    match mode {
-        "read_only" | "read-only" | "readonly" => CapabilityMode::ReadOnly,
-        "plan" => CapabilityMode::Plan,
-        _ => CapabilityMode::Full,
-    }
+fn parse_capability(mode: &str) -> Result<CapabilityMode, MachiError> {
+    CapabilityMode::parse(mode).ok_or_else(|| {
+        MachiError::new(
+            ErrorCode::ToolInvalidArgs,
+            format!("unknown capability_mode '{mode}' (expected full|read_only|plan)"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -314,5 +310,21 @@ mod tests {
             .await
             .expect("allowed");
         assert!(!ok.is_error);
+    }
+
+    #[tokio::test]
+    async fn spawn_tool_capability_mode_fail_closed() {
+        let sampler = Arc::new(MockSampler::new());
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, Vec::new()));
+        let tool = SpawnAgentTool::new(host);
+        let err = tool
+            .call(
+                ToolCallContext::default(),
+                json!({"prompt": "x", "capability_mode": "admin"}),
+            )
+            .await
+            .expect_err("unknown mode");
+        assert_eq!(err.code(), ErrorCode::ToolInvalidArgs);
+        assert!(err.message().contains("capability_mode"));
     }
 }

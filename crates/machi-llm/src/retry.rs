@@ -152,7 +152,17 @@ pub fn decide_retry(policy: &RetryPolicy, err: &MachiError, ctx: &RetryContext) 
 
     // Explicit server hint on the error path is not always present; honor RetryClass.
     match err.code() {
-        ErrorCode::LlmIdleTimeout | ErrorCode::LlmTruncated | ErrorCode::LlmAuth => {
+        ErrorCode::LlmIdleTimeout | ErrorCode::LlmTruncated => {
+            return RetryDecision::Fatal;
+        }
+        // Auth: honor AuthRefresh once (transport may refresh credentials), else fatal.
+        ErrorCode::LlmAuth => {
+            if err.retry_class() == RetryClass::AuthRefresh && ctx.attempt == 0 {
+                return RetryDecision::Retry {
+                    backoff: backoff_for_attempt(policy, next_attempt),
+                    reason: "auth_refresh".into(),
+                };
+            }
             return RetryDecision::Fatal;
         }
         ErrorCode::LlmCancelled => return RetryDecision::Fatal,
@@ -351,6 +361,72 @@ mod tests {
             },
         );
         assert_eq!(d, RetryDecision::Fatal);
+    }
+
+    #[test]
+    fn auth_refresh_once_then_fatal() {
+        let policy = RetryPolicy::for_tests();
+        let err = MachiError::new(ErrorCode::LlmAuth, "401").with_retry(RetryClass::AuthRefresh);
+        let first = decide_retry(
+            &policy,
+            &err,
+            &RetryContext {
+                attempt: 0,
+                rate_limit_retries: 0,
+                retry_after: None,
+                x_should_retry: None,
+                http_status: Some(401),
+            },
+        );
+        assert!(
+            matches!(first, RetryDecision::Retry { ref reason, .. } if reason == "auth_refresh"),
+            "{first:?}"
+        );
+        let second = decide_retry(
+            &policy,
+            &err,
+            &RetryContext {
+                attempt: 1,
+                rate_limit_retries: 0,
+                retry_after: None,
+                x_should_retry: None,
+                http_status: Some(401),
+            },
+        );
+        assert_eq!(second, RetryDecision::Fatal);
+    }
+
+    #[test]
+    fn rate_limit_honors_retry_after_from_context() {
+        let policy = RetryPolicy {
+            max_retry_after: Duration::from_secs(60),
+            jitter: false,
+            ..RetryPolicy::for_tests()
+        };
+        let err = MachiError::new(ErrorCode::LlmRateLimit, "429")
+            .with_http_status(429)
+            .with_retry_after(Duration::from_secs(9));
+        let d = decide_retry(
+            &policy,
+            &err,
+            &RetryContext {
+                attempt: 0,
+                rate_limit_retries: 0,
+                retry_after: err.retry_after(),
+                x_should_retry: None,
+                http_status: err.http_status(),
+            },
+        );
+        assert!(
+            matches!(
+                d,
+                RetryDecision::Retry {
+                    backoff,
+                    ..
+                } if backoff == Duration::from_secs(9)
+            ),
+            "{d:?}"
+        );
     }
 
     #[test]

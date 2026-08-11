@@ -150,7 +150,7 @@ async fn handle_spawn(
         if cancel.is_cancelled() {
             return Err(HostError::Cancelled);
         }
-        let spawn = to_spawn_opts(opts, cancel.child_token());
+        let spawn = to_spawn_opts(opts, cancel.child_token())?;
         match host.spawn_agent(spawn).await {
             Ok(run) => {
                 spent.fetch_add(1, Ordering::Relaxed);
@@ -294,7 +294,7 @@ fn map_host_spawn_error(e: machi_types::MachiError) -> HostError {
     }
 }
 
-fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> SpawnOpts {
+fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> Result<SpawnOpts, HostError> {
     let mut spawn = SpawnOpts::new(opts.prompt).with_cancel(cancel);
     if let Some(label) = opts.label {
         spawn = spawn.with_label(label);
@@ -303,7 +303,7 @@ fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> SpawnOpts {
         spawn.model = Some(model);
     }
     if let Some(mode) = opts.capability_mode.as_deref() {
-        spawn.capability_mode = parse_capability(mode);
+        spawn.capability_mode = parse_capability(mode)?;
     }
     if let Some(agent_type) = opts.agent_type {
         spawn = spawn.with_agent_type(agent_type);
@@ -320,15 +320,15 @@ fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> SpawnOpts {
     if let Some(id) = opts.resume_from {
         spawn = spawn.with_resume_from(id);
     }
-    spawn
+    Ok(spawn)
 }
 
-fn parse_capability(mode: &str) -> CapabilityMode {
-    match mode {
-        "read_only" | "read-only" | "readonly" => CapabilityMode::ReadOnly,
-        "plan" => CapabilityMode::Plan,
-        _ => CapabilityMode::Full,
-    }
+fn parse_capability(mode: &str) -> Result<CapabilityMode, HostError> {
+    CapabilityMode::parse(mode).ok_or_else(|| {
+        HostError::Unsupported(format!(
+            "unknown capability_mode '{mode}' (expected full|read_only|plan)"
+        ))
+    })
 }
 
 fn reply_cancelled(req: WorkflowHostRequest) {

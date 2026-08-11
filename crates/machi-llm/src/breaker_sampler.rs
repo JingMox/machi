@@ -2,15 +2,19 @@
 //!
 //! Maturity: **core**
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
+use futures::Stream;
 use machi_types::{ErrorCode, MachiError};
 
 use crate::breaker::{Admission, BreakerOutcome, CircuitBreaker};
 use crate::sample::{SampleRequest, SampleResponse};
 use crate::sampler::LlmSampler;
-use crate::stream::SampleStream;
+use crate::stream::{SampleEvent, SampleStream};
 
 /// Sampler wrapper that refuses traffic while the breaker is open.
 #[derive(Debug, Clone)]
@@ -64,9 +68,13 @@ impl<S: LlmSampler + 'static> LlmSampler for BreakerSampler<S> {
     async fn sample_stream(&self, request: SampleRequest) -> Result<SampleStream, MachiError> {
         self.admit()?;
         match self.inner.sample_stream(request).await {
-            Ok(s) => {
-                self.breaker.record(BreakerOutcome::Success);
-                Ok(s)
+            Ok(inner) => {
+                // Record terminal outcome from stream events — not on open.
+                Ok(Box::pin(BreakerStream {
+                    inner,
+                    breaker: Arc::clone(&self.breaker),
+                    recorded: AtomicBool::new(false),
+                }))
             }
             Err(e) => {
                 self.breaker.record(BreakerOutcome::Failure);
@@ -89,6 +97,46 @@ impl<S> BreakerSampler<S> {
                 ),
             )
             .with_retry(machi_types::RetryClass::Backoff)),
+        }
+    }
+}
+
+/// Records breaker outcome from stream terminal events (not on open).
+///
+/// `SampleStream` is `Pin<Box<dyn Stream>>` (always `Unpin`), so field projection
+/// needs no pin projection crate.
+struct BreakerStream {
+    inner: SampleStream,
+    breaker: Arc<CircuitBreaker>,
+    recorded: AtomicBool,
+}
+
+impl Stream for BreakerStream {
+    type Item = SampleEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(ev)) => {
+                let outcome = match &ev {
+                    SampleEvent::Completed { .. } => Some(BreakerOutcome::Success),
+                    SampleEvent::Failed { .. } => Some(BreakerOutcome::Failure),
+                    _ => None,
+                };
+                if let Some(outcome) = outcome
+                    && !self.recorded.swap(true, Ordering::Relaxed)
+                {
+                    self.breaker.record(outcome);
+                }
+                Poll::Ready(Some(ev))
+            }
+            Poll::Ready(None) => {
+                // Abrupt end without Completed/Failed: treat as failure for half-open honesty.
+                if !self.recorded.swap(true, Ordering::Relaxed) {
+                    self.breaker.record(BreakerOutcome::Failure);
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

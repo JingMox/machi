@@ -412,7 +412,7 @@ impl InProcessHost {
             return Ok(VecConversationState::from_messages(msgs.clone()));
         }
         if let Some(handle) = &self.parent_handle {
-            let msgs = handle.messages().await;
+            let msgs = handle.messages().await?;
             return Ok(VecConversationState::from_messages(msgs));
         }
         Err(MachiError::new(
@@ -621,9 +621,9 @@ impl InProcessHost {
                     return Err(map_turn_error(e));
                 }
             };
-            if let Err(e) = self.isolation.cleanup(&isolation_env).await {
-                record_spawn(self.metrics.as_ref(), "error");
-                return Err(e);
+            // Cleanup failure must not invert a successful turn (parent would lose the result).
+            if let Err(_e) = self.isolation.cleanup(&isolation_env).await {
+                record_spawn(self.metrics.as_ref(), "cleanup_error");
             }
             let status = if outcome.cancelled { "cancelled" } else { "ok" };
             record_spawn(self.metrics.as_ref(), status);

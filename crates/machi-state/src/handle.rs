@@ -140,63 +140,73 @@ impl ChatStateHandle {
     }
 
     /// Snapshot messages + usage + prompt index.
-    #[must_use]
-    pub async fn snapshot(&self) -> ChatStateSnapshot {
+    ///
+    /// # Errors
+    ///
+    /// Actor channel closed or reply dropped (handle is unusable).
+    pub async fn snapshot(&self) -> Result<ChatStateSnapshot, MachiError> {
         let (reply, rx) = oneshot::channel();
-        if self.tx.send(Command::Snapshot { reply }).is_err() {
-            return ChatStateSnapshot {
-                messages: Vec::new(),
-                usage: UsageLedger::default(),
-                prompt_index: Vec::new(),
-            };
-        }
-        rx.await.unwrap_or(ChatStateSnapshot {
-            messages: Vec::new(),
-            usage: UsageLedger::default(),
-            prompt_index: Vec::new(),
-        })
+        self.tx
+            .send(Command::Snapshot { reply })
+            .map_err(|_| actor_gone())?;
+        rx.await.map_err(|_| actor_gone())
     }
 
     /// Messages only (convenience).
-    #[must_use]
-    pub async fn messages(&self) -> Vec<Message> {
-        self.snapshot().await.messages
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::snapshot`].
+    pub async fn messages(&self) -> Result<Vec<Message>, MachiError> {
+        Ok(self.snapshot().await?.messages)
     }
 
     /// Turn-boundary indices (user messages that open a prompt).
-    #[must_use]
-    pub async fn prompt_index(&self) -> Vec<usize> {
-        self.snapshot().await.prompt_index
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::snapshot`].
+    pub async fn prompt_index(&self) -> Result<Vec<usize>, MachiError> {
+        Ok(self.snapshot().await?.prompt_index)
     }
 
     /// Message count.
-    #[must_use]
-    pub async fn len(&self) -> usize {
-        self.messages().await.len()
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::snapshot`].
+    pub async fn len(&self) -> Result<usize, MachiError> {
+        Ok(self.messages().await?.len())
     }
 
     /// True when conversation is empty.
-    #[must_use]
-    pub async fn is_empty(&self) -> bool {
-        self.len().await == 0
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::snapshot`].
+    pub async fn is_empty(&self) -> Result<bool, MachiError> {
+        Ok(self.len().await? == 0)
     }
 
     /// Usage ledger snapshot.
-    #[must_use]
-    pub async fn usage(&self) -> UsageLedger {
-        self.snapshot().await.usage
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::snapshot`].
+    pub async fn usage(&self) -> Result<UsageLedger, MachiError> {
+        Ok(self.snapshot().await?.usage)
     }
 
     /// Persist via a [`crate::persistence::ChatPersistence`] backend.
     ///
     /// # Errors
     ///
-    /// Backend I/O failures.
+    /// Actor channel or backend I/O failures.
     pub async fn save_to(
         &self,
         store: &dyn crate::persistence::ChatPersistence,
     ) -> Result<(), MachiError> {
-        let snap = self.snapshot().await;
+        let snap = self.snapshot().await?;
         store.save(&snap).await
     }
 
@@ -417,14 +427,14 @@ mod tests {
         h.append(Message::user("a")).await.expect("a");
         h.append(Message::assistant("b")).await.expect("b");
         h.append(Message::user("c")).await.expect("c");
-        let idx = h.prompt_index().await;
+        let idx = h.prompt_index().await.expect("idx");
         assert_eq!(idx, vec![1, 3]);
         h.record_main_usage_model(Usage::new(2, 1), "mock").await;
-        let u = h.usage().await;
+        let u = h.usage().await.expect("usage");
         assert_eq!(u.per_prompt.len(), 2);
         assert!(u.per_model.contains_key("mock"));
         h.record_compaction_at("max_messages").await;
-        assert_eq!(h.usage().await.compaction_at.len(), 1);
+        assert_eq!(h.usage().await.expect("usage2").compaction_at.len(), 1);
         h.shutdown().await;
     }
 }

@@ -50,13 +50,13 @@ async fn main() {
         .expect("turn1");
     println!("turn1={}", o1.output_text);
     assert_eq!(o1.output_text, "first-turn", "first checkpointed turn");
-    let n1 = h1.messages().await.len();
+    let n1 = h1.messages().await.expect("msgs1").len();
     h1.shutdown().await;
 
     // Simulate process restart: new handle from disk.
     assert!(store.exists(), "checkpoint file must exist after turn1");
     let h2 = ChatStateHandle::open_or_new(&store).await.expect("reload");
-    let n2 = h2.messages().await.len();
+    let n2 = h2.messages().await.expect("msgs2").len();
     assert_eq!(n1, n2, "reload must restore message history");
     println!("reloaded_messages={n2}");
 
@@ -76,7 +76,7 @@ async fn main() {
     println!("turn2={}", o2.output_text);
     assert_eq!(o2.output_text, "second-turn", "second turn after resume");
     assert!(
-        h2.messages().await.len() > n2,
+        h2.messages().await.expect("msgs3").len() > n2,
         "history must grow after second turn"
     );
 

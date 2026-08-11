@@ -750,7 +750,7 @@ mod dual {
         h.record_subagent_usage(Usage::new(1, 1)).await;
         h.record_compaction_at("max_messages").await;
 
-        let snap = h.snapshot().await;
+        let snap = h.snapshot().await.expect("snap");
         assert_eq!(snap.prompt_index, vec![1, 3]);
         assert_eq!(snap.usage.main.total_tokens, 20);
         assert_eq!(snap.usage.subagents.total_tokens, 2);
@@ -768,7 +768,7 @@ mod dual {
 
         // Restart: replay JSONL events + ledger from snapshot.
         let h2 = ChatStateHandle::open_or_new(&store).await.expect("open");
-        let loaded = h2.snapshot().await;
+        let loaded = h2.snapshot().await.expect("loaded");
         assert_eq!(loaded.messages.len(), 4);
         assert_eq!(loaded.prompt_index, vec![1, 3]);
         assert_eq!(loaded.usage.main.total_tokens, 20);
