@@ -108,7 +108,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::ledger::UsageLedger;
     use crate::persistence::messages_only;
 
     #[tokio::test]
@@ -124,7 +123,6 @@ mod tests {
             loaded.messages.first().map(Message::text).as_deref(),
             Some("hi")
         );
-        let _ = UsageLedger::default();
     }
 
     #[tokio::test]

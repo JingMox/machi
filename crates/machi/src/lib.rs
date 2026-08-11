@@ -70,8 +70,10 @@ pub use machi_obs::{
 };
 pub use machi_protocol as protocol;
 pub use machi_protocol::{
-    ContentBlock, ImageBlock, SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL,
-    SPAN_TOOL_BATCH, SPAN_TURN, SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId, span_catalogue_snapshot,
+    ContentBlock, IMAGE_TOKEN_COST, ImageBlock, MESSAGE_FRAME_TOKENS, PreflightOverflow,
+    SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
+    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId, check_context_overflow, estimate_image_tokens,
+    estimate_text_tokens, span_catalogue_snapshot,
 };
 #[cfg(feature = "runtime")]
 pub use machi_runtime as runtime;
@@ -79,10 +81,13 @@ pub use machi_runtime as runtime;
 pub use machi_runtime::{
     AgentRunResult, CompactionOutcome, CompactionStrategy, CompletionToolGate, ConversationState,
     DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, GateChain, GateDecision,
-    InProcessHost, InProcessIsolation, IsolationBackend, IsolationEnv, MaxMessages, MetricsSink,
-    NoopMetrics, Session, SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, StopGate,
-    TokenThreshold, TurnInput, TurnOptions, TurnOutcome, TurnRuntime, VecConversationState,
-    evaluate_stop_gates, isolation_error,
+    HARD_STOP_THRESHOLD, InProcessHost, InProcessIsolation, IsolationBackend, IsolationEnv,
+    LifecycleFanout, MaxMessages, MetricsSink, NUDGE_THRESHOLD, NoopLifecycle, NoopMetrics,
+    Session, SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, StationarityAction,
+    StationarityTracker, StopGate, TokenThreshold, TurnAbortReason, TurnInput,
+    TurnLifecycleContributor, TurnOptions, TurnOutcome, TurnRuntime, VecConversationState,
+    estimate_conversation_tokens, evaluate_stop_gates, fingerprint_batch, isolation_error,
+    nudge_message,
 };
 #[cfg(all(feature = "runtime", feature = "workflow"))]
 pub use machi_runtime::{
@@ -93,9 +98,10 @@ pub use machi_runtime::{
 pub use machi_state as state;
 #[cfg(feature = "state")]
 pub use machi_state::{
-    ChatPersistence, ChatStateHandle, ChatStateSnapshot, DEFAULT_SESSIONS_DIR, FilePersistence,
-    InMemoryMemory, MemoryItem, MemoryPersistence, MemoryPort, NullMemory, NullPersistence,
-    UsageLedger, check_tool_pairing, default_session_path, messages_only,
+    ChatPersistence, ChatStateHandle, ChatStateSnapshot, CompactionRecord, DEFAULT_SESSIONS_DIR,
+    DEFAULT_SNAPSHOT_EVERY, EVENTS_HEADER, FilePersistence, InMemoryMemory, JsonlPersistence,
+    MemoryItem, MemoryPersistence, MemoryPort, NullMemory, NullPersistence, UsageLedger,
+    check_tool_pairing, default_session_path, messages_only, session_jsonl_dir,
 };
 #[cfg(feature = "toolkit")]
 pub use machi_toolkit as toolkit;
@@ -110,10 +116,11 @@ pub use machi_tools as tools;
 pub use machi_tools::{
     AlwaysDeny, ApprovalDecision, ApprovalGate, ApprovalPolicy, AutoApprove, CalcTool,
     CapabilityFlag, CapabilityMode, ConcurrencyMode, Destructiveness, DispatchOutcome,
-    DispatchRequest, DynTool, EXTRA_SPAWN_DEPTH, InterruptBehavior, SharedTool, StaticToolSource,
-    ToolCallContext, ToolDefinition, ToolDispatch, ToolError, ToolMetadata, ToolProgress,
-    ToolRegistry, ToolResult, ToolSource, ToolStream, ToolStreamItem, drain_terminal,
-    drain_with_progress, merge_arc_sources, merge_tool_sources, terminal_only, with_progress,
+    DispatchRequest, DynTool, EXTRA_SPAWN_DEPTH, InterruptBehavior, MAX_DELTA_BYTES,
+    MAX_FRAME_BYTES, SharedTool, StaticToolSource, ToolCallContext, ToolDefinition, ToolDispatch,
+    ToolError, ToolMetadata, ToolProgress, ToolRegistry, ToolResult, ToolSource, ToolStream,
+    ToolStreamItem, drain_terminal, drain_with_progress, merge_arc_sources, merge_tool_sources,
+    partial_progress_frames, terminal_only, with_progress,
 };
 pub use machi_types as types;
 pub use machi_types::{

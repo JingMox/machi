@@ -10,6 +10,10 @@ with the freeze policy in [`ROADMAP.md`](./ROADMAP.md) § 6.
 
 ### Added
 
+- **W3 turn/tools thickness:** stationarity gate (nudge@8 / hard-stop@16);
+  preflight token estimate + overflow check; `ToolProgress::Partial` + UTF-8
+  framing helpers; tool error codes (rate/concurrency/network/unavailable);
+  `TurnLifecycleContributor` + `interject_rx`; `ToolMetadata::max_concurrency`.
 - **W2 LLM supply layer:** `RetryPolicy` / `RetryingSampler` (429 budget,
   backoff+jitter, empty-response retry, stream idle timeout); `CircuitBreaker`
   / `BreakerSampler`; `SampleEvent` variants (`ReasoningDelta`, `ToolCallDelta`,

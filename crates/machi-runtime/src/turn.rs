@@ -9,21 +9,25 @@ use machi_agent::Agent;
 use machi_compaction::{CompactionStrategy, MaxMessages};
 use machi_llm::{LlmSampler, SampleEvent, SampleRequest, SampleResponse, ToolChoice};
 use machi_obs::{NoopMetrics, SharedMetrics, record_compaction, record_sample};
+use machi_protocol::{PreflightOverflow, check_context_overflow};
 use machi_tools::registry::CapabilityMode;
 use machi_tools::{
     ApprovalGate, ApprovalPolicy, AutoApprove, DispatchRequest, ToolCallContext, ToolDispatch,
 };
 use machi_types::{AgentId, Deadline, ErrorCode, MachiError, Message, RunId, SessionId, Usage};
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span};
 
 use crate::gates::{GateChain, GateDecision};
+use crate::lifecycle::{LifecycleFanout, TurnAbortReason, TurnLifecycleContributor};
 use crate::schema::{
     STRUCTURED_OUTPUT_MAX_RETRIES, compile_schema, schema_retry_reminder,
     validate_structured_output,
 };
-use crate::state::ConversationState;
+use crate::state::{ConversationState, estimate_messages_tokens};
+use crate::stationarity::{StationarityAction, StationarityTracker, nudge_message};
 
 /// User-facing turn input.
 #[derive(Debug, Clone)]
@@ -78,6 +82,16 @@ pub struct TurnOptions {
     pub max_output_tokens: Option<u32>,
     /// Prefer [`LlmSampler::sample_stream`] and aggregate into a full response.
     pub use_stream: bool,
+    /// Lifecycle contributors (W3.5).
+    pub contributors: Arc<dyn TurnLifecycleContributor>,
+    /// Optional mid-turn user interjections drained before each sample (W3.6).
+    pub interject_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Message>>>>,
+    /// Context window size for preflight overflow (tokens). `None` disables check.
+    pub context_window_tokens: Option<u32>,
+    /// Soft threshold ratio of context window (default 0.9).
+    pub context_overflow_ratio: f32,
+    /// When true, overflow after compaction is a hard error; else continue.
+    pub fail_on_context_overflow: bool,
 }
 
 impl std::fmt::Debug for TurnOptions {
@@ -92,6 +106,9 @@ impl std::fmt::Debug for TurnOptions {
             .field("spawn_depth", &self.spawn_depth)
             .field("max_output_tokens", &self.max_output_tokens)
             .field("use_stream", &self.use_stream)
+            .field("context_window_tokens", &self.context_window_tokens)
+            .field("context_overflow_ratio", &self.context_overflow_ratio)
+            .field("fail_on_context_overflow", &self.fail_on_context_overflow)
             .finish_non_exhaustive()
     }
 }
@@ -115,6 +132,11 @@ impl Default for TurnOptions {
             spawn_depth: None,
             max_output_tokens: None,
             use_stream: false,
+            contributors: Arc::new(LifecycleFanout::new()),
+            interject_rx: None,
+            context_window_tokens: None,
+            context_overflow_ratio: 0.9,
+            fail_on_context_overflow: true,
         }
     }
 }
@@ -206,6 +228,30 @@ impl TurnOptions {
         self.stop_gates = Some(gates);
         self
     }
+
+    /// Install lifecycle contributors (W3.5).
+    #[must_use]
+    pub fn with_contributors(mut self, contributors: Arc<dyn TurnLifecycleContributor>) -> Self {
+        self.contributors = contributors;
+        self
+    }
+
+    /// Mid-turn interjection channel drained before each sample (W3.6).
+    #[must_use]
+    pub fn with_interject_rx(
+        mut self,
+        rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Message>>>,
+    ) -> Self {
+        self.interject_rx = Some(rx);
+        self
+    }
+
+    /// Enable preflight context overflow checks (W3.2).
+    #[must_use]
+    pub const fn with_context_window(mut self, tokens: u32) -> Self {
+        self.context_window_tokens = Some(tokens);
+        self
+    }
 }
 
 /// Successful or failed turn result.
@@ -265,6 +311,11 @@ impl TurnRuntime {
         .await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::excessive_nesting,
+        reason = "turn loop owns cancel/preflight/stationarity/dispatch/lifecycle"
+    )]
     async fn run_inner(
         &self,
         agent: &Agent,
@@ -307,30 +358,51 @@ impl TurnRuntime {
             .with_approval_policy(options.approval_policy)
             .with_metrics(Arc::clone(&options.metrics));
 
+        options.contributors.on_turn_start(&run_id);
+        let mut stationarity = StationarityTracker::new();
+
         loop {
             if options.cancel.is_cancelled() {
+                options
+                    .contributors
+                    .on_turn_abort(&run_id, &TurnAbortReason::Cancelled);
                 return Ok(empty_cancelled(run_id, usage, steps));
             }
             if deadline_expired(&options) {
-                return Err(MachiError::new(
-                    ErrorCode::RuntimeDeadline,
-                    "turn deadline expired",
-                ));
+                let err = MachiError::new(ErrorCode::RuntimeDeadline, "turn deadline expired");
+                options
+                    .contributors
+                    .on_turn_abort(&run_id, &TurnAbortReason::from_error(&err));
+                return Err(err);
             }
             if steps >= max_steps {
-                return Err(MachiError::new(
+                let err = MachiError::new(
                     ErrorCode::RuntimeMaxSteps,
                     format!("exceeded max_steps ({max_steps})"),
-                ));
+                );
+                options
+                    .contributors
+                    .on_turn_abort(&run_id, &TurnAbortReason::from_error(&err));
+                return Err(err);
             }
             steps = steps.saturating_add(1);
             let step_u32 = u32::try_from(steps).unwrap_or(u32::MAX);
+
+            drain_interjections(state, &options).await;
 
             maybe_compact(
                 state,
                 options.compaction.as_deref(),
                 options.metrics.as_ref(),
+                false,
             )?;
+
+            if let Err(err) =
+                preflight_with_optional_force_compact(state, &options, options.metrics.as_ref())
+            {
+                options.contributors.on_turn_error(&run_id, &err);
+                return Err(err);
+            }
 
             let tools = agent.tools().definitions(options.capability_mode);
             let request = SampleRequest {
@@ -352,7 +424,9 @@ impl TurnRuntime {
                 .await
             {
                 Ok(r) => r,
-                Err(e) => return map_sample_error(e, &options, run_id.clone(), usage, steps),
+                Err(e) => {
+                    return finish_sample_error(e, &options, run_id, usage, steps);
+                }
             };
             let sample_ms = sample_started.elapsed().as_secs_f64() * 1000.0;
             record_sample(
@@ -365,6 +439,7 @@ impl TurnRuntime {
 
             let message = response.message;
             if message.tool_calls.is_empty() {
+                stationarity.reset();
                 let mut final_ctx = FinalCtx {
                     agent,
                     state,
@@ -377,15 +452,113 @@ impl TurnRuntime {
                     usage,
                     steps,
                 };
-                match handle_final_assistant(&mut final_ctx)? {
-                    FinalStep::Done(outcome) => return Ok(outcome),
-                    FinalStep::Continue => continue,
+                match handle_final_assistant(&mut final_ctx) {
+                    Ok(FinalStep::Done(outcome)) => {
+                        options.contributors.on_turn_done(&run_id, outcome.steps);
+                        return Ok(outcome);
+                    }
+                    Ok(FinalStep::Continue) => continue,
+                    Err(e) => {
+                        options.contributors.on_turn_error(&run_id, &e);
+                        return Err(e);
+                    }
+                }
+            }
+
+            match stationarity.observe_tool_batch(&message.tool_calls) {
+                StationarityAction::Ok => {}
+                StationarityAction::Nudge { reminder } => {
+                    state.append(nudge_message(reminder));
+                }
+                StationarityAction::HardStop { error } => {
+                    options
+                        .contributors
+                        .on_turn_abort(&run_id, &TurnAbortReason::from_error(&error));
+                    return Err(error);
                 }
             }
 
             dispatch_tools(agent, state, &options, &dispatch, message, step_u32).await;
         }
     }
+}
+
+/// Preflight overflow: if over limit, force one compaction pass then re-check.
+fn preflight_with_optional_force_compact(
+    state: &mut dyn ConversationState,
+    options: &TurnOptions,
+    metrics: &dyn machi_obs::MetricsSink,
+) -> Result<(), MachiError> {
+    let Some(window) = options.context_window_tokens else {
+        return Ok(());
+    };
+    let estimated = estimate_messages_tokens(state.messages());
+    match check_context_overflow(estimated, window, options.context_overflow_ratio) {
+        PreflightOverflow::Ok { .. } => Ok(()),
+        PreflightOverflow::Overflow { .. } => {
+            // ROADMAP 3.2: overflow → compact or typed error.
+            maybe_compact(state, options.compaction.as_deref(), metrics, true)?;
+            let estimated2 = estimate_messages_tokens(state.messages());
+            match check_context_overflow(estimated2, window, options.context_overflow_ratio) {
+                PreflightOverflow::Ok { .. } => Ok(()),
+                PreflightOverflow::Overflow {
+                    estimated,
+                    limit,
+                    window,
+                } if options.fail_on_context_overflow => Err(MachiError::new(
+                    ErrorCode::CompactionOverflow,
+                    format!(
+                        "context overflow after compaction: estimated {estimated} tokens \
+                         exceeds limit {limit} (window {window})"
+                    ),
+                )),
+                PreflightOverflow::Overflow { .. } => Ok(()),
+            }
+        }
+    }
+}
+
+fn finish_sample_error(
+    e: MachiError,
+    options: &TurnOptions,
+    run_id: RunId,
+    usage: Usage,
+    steps: usize,
+) -> Result<TurnOutcome, MachiError> {
+    let mapped = map_sample_error(e, options, run_id.clone(), usage, steps);
+    match &mapped {
+        Ok(outcome) if outcome.cancelled => {
+            options
+                .contributors
+                .on_turn_abort(&run_id, &TurnAbortReason::Cancelled);
+        }
+        Err(err) if err.code() == ErrorCode::RuntimeDeadline => {
+            options
+                .contributors
+                .on_turn_abort(&run_id, &TurnAbortReason::Deadline);
+        }
+        Err(err) => {
+            options.contributors.on_turn_error(&run_id, err);
+        }
+        Ok(_) => {}
+    }
+    mapped
+}
+
+async fn drain_interjections(state: &mut dyn ConversationState, options: &TurnOptions) {
+    let Some(rx) = &options.interject_rx else {
+        return;
+    };
+    let mut guard = rx.lock().await;
+    while let Ok(msg) = guard.try_recv() {
+        state.append(msg);
+    }
+}
+
+/// Estimate tokens for a conversation (re-export of shared estimator).
+#[must_use]
+pub fn estimate_conversation_tokens(messages: &[Message]) -> u32 {
+    estimate_messages_tokens(messages)
 }
 
 enum FinalStep {
@@ -505,13 +678,14 @@ fn maybe_compact(
     state: &mut dyn ConversationState,
     strategy: Option<&dyn CompactionStrategy>,
     metrics: &dyn machi_obs::MetricsSink,
+    force: bool,
 ) -> Result<(), MachiError> {
     let Some(strategy) = strategy else {
         return Ok(());
     };
     let msgs = state.messages();
     let tokens = state.token_estimate();
-    if !strategy.should_compact(msgs, tokens) {
+    if !force && !strategy.should_compact(msgs, tokens) {
         return Ok(());
     }
     let name = strategy.name();

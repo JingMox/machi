@@ -199,7 +199,7 @@ RetryingSampler(policy)          ← retry / backoff / jitter / Retry-After
 **Exit criteria:** retry classification table fully covered by tests against a scripted
 mock transport (no network); breaker state-machine table tests; firewall still green.
 
-### W3 — Turn & tools main-path thickness (`machi-runtime`, `machi-tools`)
+### W3 — Turn & tools main-path thickness (`machi-runtime`, `machi-tools`) ✅ (2026-08-09)
 
 | # | Work | Design |
 | --- | ------ | -------- |

@@ -336,8 +336,9 @@ fn collect_concurrent_window(
     start: usize,
     max: usize,
 ) -> Vec<usize> {
-    let mut window = vec![start];
-    let mut j = start.saturating_add(1);
+    let mut window = Vec::new();
+    let mut per_tool: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut j = start;
     while j < requests.len() && window.len() < max {
         let Some(req) = requests.get(j) else {
             break;
@@ -348,11 +349,33 @@ fn collect_concurrent_window(
         if !registry.allows(tool.as_ref(), mode) {
             break;
         }
-        if tool.metadata().concurrency == ConcurrencyMode::Exclusive {
+        let meta = tool.metadata();
+        if meta.concurrency == ConcurrencyMode::Exclusive {
+            // Exclusive tools never share a concurrent window (except alone at start).
+            if window.is_empty() {
+                window.push(j);
+            }
             break;
+        }
+        // Per-tool cap from metadata (W3.7); default unlimited within global max.
+        if let Some(cap) = meta.max_concurrency {
+            let count = per_tool.entry(req.call.name.clone()).or_insert(0);
+            if *count >= cap.max(1) {
+                // Cannot add another instance of this tool; stop growing window.
+                if window.is_empty() {
+                    // Still must make progress: run this tool alone.
+                    window.push(j);
+                }
+                break;
+            }
+            *count = count.saturating_add(1);
         }
         window.push(j);
         j = j.saturating_add(1);
+    }
+    if window.is_empty() {
+        // Fail-safe: never return empty (caller assumes start is included).
+        window.push(start);
     }
     window
 }
@@ -396,19 +419,77 @@ fn finalize_outcomes(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "unit tests")]
 mod tests {
+    use super::*;
+    use crate::tool::{DynTool, ToolResult};
+    use async_trait::async_trait;
+    use machi_types::{ToolCall, ToolCallId};
+    use serde_json::json;
+
+    struct CapTool {
+        name: String,
+        cap: usize,
+    }
+
+    #[async_trait]
+    impl DynTool for CapTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "cap"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            json!({})
+        }
+        fn metadata(&self) -> ToolMetadata {
+            ToolMetadata {
+                concurrency: ConcurrencyMode::Concurrent,
+                max_concurrency: Some(self.cap),
+                ..Default::default()
+            }
+        }
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _args: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::text("ok"))
+        }
+    }
+
+    #[test]
+    fn per_tool_max_concurrency_limits_window() {
+        let reg = ToolRegistry::from_tools(vec![Arc::new(CapTool {
+            name: "a".into(),
+            cap: 1,
+        })]);
+        let reqs: Vec<DispatchRequest> = (0..3)
+            .map(|i| DispatchRequest {
+                call: ToolCall {
+                    id: ToolCallId::new(format!("c{i}")).expect("id"),
+                    name: "a".into(),
+                    arguments: json!({}),
+                },
+            })
+            .collect();
+        let window = collect_concurrent_window(&reg, CapabilityMode::Full, &reqs, 0, 32);
+        assert_eq!(
+            window.len(),
+            1,
+            "cap=1 must not fan out three concurrent a()"
+        );
+    }
+
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use async_trait::async_trait;
     use machi_types::ErrorCode;
-    use serde_json::json;
     use tokio::sync::Barrier;
 
-    use super::*;
     use crate::approval::AlwaysDeny;
-    use crate::metadata::{ConcurrencyMode, ToolMetadata};
-    use crate::tool::DynTool;
+    use crate::metadata::ToolMetadata;
 
     struct CountingTool {
         name: String,

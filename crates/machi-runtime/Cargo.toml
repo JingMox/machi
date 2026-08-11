@@ -16,6 +16,7 @@ machi-agent = { workspace = true }
 machi-compaction = { workspace = true }
 machi-llm = { workspace = true }
 machi-obs = { workspace = true }
+machi-protocol = { workspace = true }
 machi-state = { workspace = true }
 machi-tools = { workspace = true }
 machi-types = { workspace = true }

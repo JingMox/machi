@@ -21,9 +21,10 @@ mod dual {
 
     use async_trait::async_trait;
     use machi::{
-        DynTool, ErrorCode, HostError, InProcessHost, Journal, LlmSampler, MachiError, MockSampler,
-        SampleRequest, SampleResponse, SessionHost, SpawnAgentTool, SpawnOpts, ToolCallContext,
-        WorkflowOutcome, WorkflowRunParams, run_workflow_on_host,
+        ChatStateHandle, DynTool, ErrorCode, HostError, InProcessHost, Journal, JsonlPersistence,
+        LlmSampler, MachiError, Message, MockSampler, SampleRequest, SampleResponse, SessionHost,
+        SpawnAgentTool, SpawnOpts, ToolCallContext, Usage, WorkflowOutcome, WorkflowRunParams,
+        run_workflow_on_host,
     };
     use serde_json::json;
     use tokio::sync::mpsc;
@@ -668,5 +669,48 @@ mod dual {
             "{outcome2:?}"
         );
         assert_eq!(Journal::load(path).expect("final").len(), 1);
+    }
+
+    // ── W4 state / ledger ───────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w4_ledger_and_jsonl_restart() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tmp");
+        let store = JsonlPersistence::new(dir.path().join("sess")).with_snapshot_every(2);
+        let h = ChatStateHandle::spawn(vec![Message::system("s")]);
+        h.append(Message::user("p0")).await.expect("p0");
+        h.record_main_usage_model(Usage::new(10, 5), "mock-a").await;
+        h.append(Message::assistant("a0")).await.expect("a0");
+        h.append(Message::user("p1")).await.expect("p1");
+        h.record_main_usage_model(Usage::new(3, 2), "mock-b").await;
+        h.record_subagent_usage(Usage::new(1, 1)).await;
+        h.record_compaction_at("max_messages").await;
+
+        let snap = h.snapshot().await;
+        assert_eq!(snap.prompt_index, vec![1, 3]);
+        assert_eq!(snap.usage.main.total_tokens, 20);
+        assert_eq!(snap.usage.subagents.total_tokens, 2);
+        assert_eq!(snap.usage.per_prompt.len(), 2);
+        assert_eq!(
+            snap.usage.per_prompt.first().map(|u| u.total_tokens),
+            Some(15)
+        );
+        assert!(snap.usage.per_model.contains_key("mock-a"));
+        assert!(snap.usage.per_model.contains_key("mock-b"));
+        assert_eq!(snap.usage.compaction_at.len(), 1);
+
+        h.save_to(&store).await.expect("save");
+        h.shutdown().await;
+
+        // Restart: replay JSONL events + ledger from snapshot.
+        let h2 = ChatStateHandle::open_or_new(&store).await.expect("open");
+        let loaded = h2.snapshot().await;
+        assert_eq!(loaded.messages.len(), 4);
+        assert_eq!(loaded.prompt_index, vec![1, 3]);
+        assert_eq!(loaded.usage.main.total_tokens, 20);
+        assert_eq!(loaded.usage.compaction_at.len(), 1);
+        h2.shutdown().await;
     }
 }

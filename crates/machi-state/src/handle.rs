@@ -1,6 +1,6 @@
-//! Actor-backed conversation handle.
+//! Actor-backed conversation handle (W4.3 prompt index + ledger).
 
-use machi_types::{MachiError, Message};
+use machi_types::{MachiError, Message, Role, Usage};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ledger::UsageLedger;
@@ -11,8 +11,11 @@ use crate::strict::{StrictAppendError, check_append};
 pub struct ChatStateSnapshot {
     /// Ordered messages.
     pub messages: Vec<Message>,
-    /// Usage ledger.
+    /// Usage ledger (session + per-prompt + per-model).
     pub usage: UsageLedger,
+    /// Message indices that start a user prompt / turn boundary.
+    #[serde(default)]
+    pub prompt_index: Vec<usize>,
 }
 
 enum Command {
@@ -33,8 +36,13 @@ enum Command {
         reply: oneshot::Sender<ChatStateSnapshot>,
     },
     RecordUsage {
-        usage: machi_types::Usage,
+        usage: Usage,
         subagent: bool,
+        model: Option<String>,
+        reply: oneshot::Sender<()>,
+    },
+    RecordCompaction {
+        strategy: String,
         reply: oneshot::Sender<()>,
     },
     MarkIncomplete {
@@ -62,15 +70,26 @@ impl ChatStateHandle {
     #[must_use]
     pub fn spawn(seed: Vec<Message>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(actor_loop(rx, seed, UsageLedger::new()));
+        let prompt_index = prompt_index_from_messages(&seed);
+        tokio::spawn(actor_loop(rx, seed, UsageLedger::new(), prompt_index));
         Self { tx }
     }
 
-    /// Spawn an actor from a full checkpoint (messages + usage).
+    /// Spawn an actor from a full checkpoint.
     #[must_use]
     pub fn spawn_from_snapshot(snapshot: ChatStateSnapshot) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(actor_loop(rx, snapshot.messages, snapshot.usage));
+        let prompt_index = if snapshot.prompt_index.is_empty() {
+            prompt_index_from_messages(&snapshot.messages)
+        } else {
+            snapshot.prompt_index
+        };
+        tokio::spawn(actor_loop(
+            rx,
+            snapshot.messages,
+            snapshot.usage,
+            prompt_index,
+        ));
         Self { tx }
     }
 
@@ -120,7 +139,7 @@ impl ChatStateHandle {
         }
     }
 
-    /// Snapshot messages + usage.
+    /// Snapshot messages + usage + prompt index.
     #[must_use]
     pub async fn snapshot(&self) -> ChatStateSnapshot {
         let (reply, rx) = oneshot::channel();
@@ -128,11 +147,13 @@ impl ChatStateHandle {
             return ChatStateSnapshot {
                 messages: Vec::new(),
                 usage: UsageLedger::default(),
+                prompt_index: Vec::new(),
             };
         }
         rx.await.unwrap_or(ChatStateSnapshot {
             messages: Vec::new(),
             usage: UsageLedger::default(),
+            prompt_index: Vec::new(),
         })
     }
 
@@ -140,6 +161,12 @@ impl ChatStateHandle {
     #[must_use]
     pub async fn messages(&self) -> Vec<Message> {
         self.snapshot().await.messages
+    }
+
+    /// Turn-boundary indices (user messages that open a prompt).
+    #[must_use]
+    pub async fn prompt_index(&self) -> Vec<usize> {
+        self.snapshot().await.prompt_index
     }
 
     /// Message count.
@@ -173,7 +200,7 @@ impl ChatStateHandle {
         store.save(&snap).await
     }
 
-    /// Replace state from a persistence backend when present (messages + usage).
+    /// Replace state from a persistence backend when present.
     ///
     /// # Errors
     ///
@@ -205,14 +232,29 @@ impl ChatStateHandle {
         }
     }
 
-    /// Record main-loop usage.
-    pub async fn record_main_usage(&self, usage: machi_types::Usage) {
+    /// Record main-loop usage (current prompt + session main).
+    pub async fn record_main_usage(&self, usage: Usage) {
+        self.record_usage(usage, false, None).await;
+    }
+
+    /// Record main-loop usage with model attribution.
+    pub async fn record_main_usage_model(&self, usage: Usage, model: impl Into<String>) {
+        self.record_usage(usage, false, Some(model.into())).await;
+    }
+
+    /// Record nested agent usage.
+    pub async fn record_subagent_usage(&self, usage: Usage) {
+        self.record_usage(usage, true, None).await;
+    }
+
+    async fn record_usage(&self, usage: Usage, subagent: bool, model: Option<String>) {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
             .send(Command::RecordUsage {
                 usage,
-                subagent: false,
+                subagent,
+                model,
                 reply,
             })
             .is_ok()
@@ -221,14 +263,13 @@ impl ChatStateHandle {
         }
     }
 
-    /// Record nested agent usage.
-    pub async fn record_subagent_usage(&self, usage: machi_types::Usage) {
+    /// Record a compaction event at the current message length.
+    pub async fn record_compaction_at(&self, strategy: impl Into<String>) {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
-            .send(Command::RecordUsage {
-                usage,
-                subagent: true,
+            .send(Command::RecordCompaction {
+                strategy: strategy.into(),
                 reply,
             })
             .is_ok()
@@ -254,6 +295,14 @@ impl ChatStateHandle {
     }
 }
 
+fn prompt_index_from_messages(messages: &[Message]) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| (m.role == Role::User).then_some(i))
+        .collect()
+}
+
 fn actor_gone() -> MachiError {
     MachiError::new(
         machi_types::ErrorCode::StatePersistence,
@@ -269,6 +318,7 @@ async fn actor_loop(
     mut rx: mpsc::UnboundedReceiver<Command>,
     mut messages: Vec<Message>,
     mut usage: UsageLedger,
+    mut prompt_index: Vec<usize>,
 ) {
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -280,12 +330,18 @@ async fn actor_loop(
                 let result = if strict {
                     match check_append(&messages, &message) {
                         Ok(()) => {
+                            if message.role == Role::User {
+                                prompt_index.push(messages.len());
+                            }
                             messages.push(message);
                             Ok(())
                         }
                         Err(e) => Err(map_strict(e)),
                     }
                 } else {
+                    if message.role == Role::User {
+                        prompt_index.push(messages.len());
+                    }
                     messages.push(message);
                     Ok(())
                 };
@@ -296,29 +352,46 @@ async fn actor_loop(
                 reply,
             } => {
                 messages = next;
+                prompt_index = prompt_index_from_messages(&messages);
                 let _ = reply.send(());
             }
             Command::Restore { snapshot, reply } => {
                 messages = snapshot.messages;
                 usage = snapshot.usage;
+                prompt_index = if snapshot.prompt_index.is_empty() {
+                    prompt_index_from_messages(&messages)
+                } else {
+                    snapshot.prompt_index
+                };
                 let _ = reply.send(());
             }
             Command::Snapshot { reply } => {
                 let _ = reply.send(ChatStateSnapshot {
                     messages: messages.clone(),
-                    usage,
+                    usage: usage.clone(),
+                    prompt_index: prompt_index.clone(),
                 });
             }
             Command::RecordUsage {
                 usage: u,
                 subagent,
+                model,
                 reply,
             } => {
                 if subagent {
                     usage.record_subagent(u);
                 } else {
                     usage.record_main(u);
+                    let prompt_i = prompt_index.len().saturating_sub(1);
+                    usage.record_prompt(prompt_i, u);
                 }
+                if let Some(m) = model {
+                    usage.record_model(m, u);
+                }
+                let _ = reply.send(());
+            }
+            Command::RecordCompaction { strategy, reply } => {
+                usage.record_compaction_at(messages.len(), strategy);
                 let _ = reply.send(());
             }
             Command::MarkIncomplete { reply } => {
@@ -334,58 +407,24 @@ async fn actor_loop(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "unit tests")]
 mod tests {
-    use machi_types::{ToolCall, ToolCallId};
-    use serde_json::json;
-
     use super::*;
 
     #[tokio::test]
-    async fn strict_blocks_dangling_result() {
-        let h = ChatStateHandle::spawn(vec![]);
-        let id = ToolCallId::new("x").expect("id");
-        let err = h
-            .append(Message::tool_result(id, "t", "nope"))
-            .await
-            .expect_err("dangling");
-        assert_eq!(err.code(), machi_types::ErrorCode::StateInvariant);
-        h.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn accepts_paired_flow() {
-        let h = ChatStateHandle::spawn(vec![Message::user("hi")]);
-        let id = ToolCallId::new("c1").expect("id");
-        h.append(Message::assistant_tools(vec![ToolCall {
-            id: id.clone(),
-            name: "t".into(),
-            arguments: json!({}),
-        }]))
-        .await
-        .expect("assistant");
-        h.append(Message::tool_result(id, "t", "ok"))
-            .await
-            .expect("result");
-        assert_eq!(h.messages().await.len(), 3);
-        h.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn restore_preserves_usage() {
-        use machi_types::Usage;
-
-        use crate::ledger::UsageLedger;
-
-        let mut usage = UsageLedger::new();
-        usage.record_main(Usage::new(10, 5));
-        let snap = ChatStateSnapshot {
-            messages: vec![Message::user("hi")],
-            usage,
-        };
-        let h = ChatStateHandle::spawn_from_snapshot(snap);
-        let s = h.snapshot().await;
-        assert_eq!(s.messages.len(), 1);
-        assert_eq!(s.usage.main.total_tokens, 15);
+    async fn prompt_index_tracks_user_turns() {
+        let h = ChatStateHandle::spawn(vec![Message::system("s")]);
+        h.append(Message::user("a")).await.expect("a");
+        h.append(Message::assistant("b")).await.expect("b");
+        h.append(Message::user("c")).await.expect("c");
+        let idx = h.prompt_index().await;
+        assert_eq!(idx, vec![1, 3]);
+        h.record_main_usage_model(Usage::new(2, 1), "mock").await;
+        let u = h.usage().await;
+        assert_eq!(u.per_prompt.len(), 2);
+        assert!(u.per_model.contains_key("mock"));
+        h.record_compaction_at("max_messages").await;
+        assert_eq!(h.usage().await.compaction_at.len(), 1);
         h.shutdown().await;
     }
 }

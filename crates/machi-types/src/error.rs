@@ -40,6 +40,14 @@ pub enum ErrorCode {
     ToolApprovalDenied,
     /// Tool stream ended without a terminal item (protocol violation).
     ToolStreamProtocol,
+    /// Tool rate limited by upstream service.
+    ToolRateLimited,
+    /// Tool concurrency limit exceeded.
+    ToolConcurrencyLimit,
+    /// Tool network failure.
+    ToolNetwork,
+    /// Tool upstream service unavailable.
+    ToolServiceUnavailable,
 
     // --- llm ---
     /// LLM transport or provider failure.
@@ -80,6 +88,8 @@ pub enum ErrorCode {
     RuntimeStructuredOutput,
     /// Turn deadline exceeded.
     RuntimeDeadline,
+    /// Identical tool calls repeated past the stationarity hard stop.
+    RuntimeStationarity,
 
     // --- host ---
     /// Host spawn failed.
@@ -143,6 +153,10 @@ impl ErrorCode {
             Self::ToolDenied => "tool.denied",
             Self::ToolApprovalDenied => "tool.approval_denied",
             Self::ToolStreamProtocol => "tool.stream_protocol",
+            Self::ToolRateLimited => "tool.rate_limited",
+            Self::ToolConcurrencyLimit => "tool.concurrency_limit",
+            Self::ToolNetwork => "tool.network",
+            Self::ToolServiceUnavailable => "tool.service_unavailable",
             Self::LlmProvider => "llm.provider",
             Self::LlmCancelled => "llm.cancelled",
             Self::LlmInvalidResponse => "llm.invalid_response",
@@ -160,6 +174,7 @@ impl ErrorCode {
             Self::RuntimeGate => "runtime.gate",
             Self::RuntimeStructuredOutput => "runtime.structured_output",
             Self::RuntimeDeadline => "runtime.deadline",
+            Self::RuntimeStationarity => "runtime.stationarity",
             Self::HostSpawn => "host.spawn",
             Self::HostBudget => "host.budget",
             Self::HostDepth => "host.depth",
@@ -193,7 +208,11 @@ impl ErrorCode {
             | Self::ToolCancelled
             | Self::ToolDenied
             | Self::ToolApprovalDenied
-            | Self::ToolStreamProtocol => "tool",
+            | Self::ToolStreamProtocol
+            | Self::ToolRateLimited
+            | Self::ToolConcurrencyLimit
+            | Self::ToolNetwork
+            | Self::ToolServiceUnavailable => "tool",
             Self::LlmProvider
             | Self::LlmCancelled
             | Self::LlmInvalidResponse
@@ -208,7 +227,8 @@ impl ErrorCode {
             | Self::RuntimeCancelled
             | Self::RuntimeGate
             | Self::RuntimeStructuredOutput
-            | Self::RuntimeDeadline => "runtime",
+            | Self::RuntimeDeadline
+            | Self::RuntimeStationarity => "runtime",
             Self::HostSpawn
             | Self::HostBudget
             | Self::HostDepth
@@ -263,6 +283,7 @@ impl ErrorCode {
             | Self::RuntimeGate
             | Self::RuntimeStructuredOutput
             | Self::RuntimeDeadline
+            | Self::RuntimeStationarity
             | Self::HostBudget
             | Self::HostDepth
             | Self::HostConcurrency
@@ -274,6 +295,10 @@ impl ErrorCode {
             | Self::CompactionOverflow
             | Self::Internal => RetryClass::Never,
             Self::ToolExecution
+            | Self::ToolRateLimited
+            | Self::ToolConcurrencyLimit
+            | Self::ToolNetwork
+            | Self::ToolServiceUnavailable
             | Self::LlmInvalidResponse
             | Self::HostSpawn
             | Self::HostIsolation
