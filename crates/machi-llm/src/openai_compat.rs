@@ -4,7 +4,7 @@
 //! The live [`OpenAiCompatSampler`] is behind the `openai` feature.
 
 use machi_tools::ToolDefinition;
-use machi_types::{ErrorCode, MachiError, Message, RetryClass, Role, ToolCall, ToolCallId, Usage};
+use machi_types::{ErrorCode, MachiError, Message, Role, ToolCall, ToolCallId, Usage};
 use serde_json::{Value, json};
 
 use crate::sample::{SampleRequest, SampleResponse, ToolChoice};
@@ -254,14 +254,19 @@ fn parse_usage(raw: Option<&Value>) -> Usage {
     Usage::new(input, output)
 }
 
-/// Map HTTP status to a typed LLM error.
+/// Map HTTP status to a typed LLM error (single path: W2 `classify_http_status`).
 #[must_use]
 pub fn http_status_error(status: u16, body: &str) -> MachiError {
+    use crate::retry::{HttpRetryClass, classify_http_status, error_code_for_http};
+    use machi_types::RetryClass;
+
     let snippet: String = body.chars().take(256).collect();
-    let (code, retry) = match status {
-        401 | 403 => (ErrorCode::LlmProvider, RetryClass::AuthRefresh),
-        429 | 500 | 502 | 503 | 504 => (ErrorCode::LlmProvider, RetryClass::Backoff),
-        _ => (ErrorCode::LlmProvider, RetryClass::Never),
+    let class = classify_http_status(status, None);
+    let code = error_code_for_http(status, class);
+    let retry = match (code, class) {
+        (ErrorCode::LlmAuth, _) => RetryClass::AuthRefresh,
+        (_, HttpRetryClass::RateLimited | HttpRetryClass::Retry) => RetryClass::Backoff,
+        (_, HttpRetryClass::Fatal) => RetryClass::Never,
     };
     MachiError::new(code, format!("openai-compatible HTTP {status}: {snippet}")).with_retry(retry)
 }

@@ -2,6 +2,8 @@
 //!
 //! The handle is the external API; mutations are serialized through an internal
 //! actor so concurrent hosts cannot corrupt tool-call pairing.
+//!
+//! Maturity: **core**.
 
 #![forbid(unsafe_code)]
 

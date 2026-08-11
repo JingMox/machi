@@ -102,10 +102,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
                     return Ok(response);
                 }
                 Err(err) => {
-                    let is_rate = matches!(
-                        err.code(),
-                        ErrorCode::LlmRateLimit | ErrorCode::LlmRateLimited
-                    );
+                    let is_rate = matches!(err.code(), ErrorCode::LlmRateLimit);
                     match decide_retry(
                         &self.policy,
                         &err,
@@ -147,10 +144,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
                     ));
                 }
                 Err(err) => {
-                    let is_rate = matches!(
-                        err.code(),
-                        ErrorCode::LlmRateLimit | ErrorCode::LlmRateLimited
-                    );
+                    let is_rate = matches!(err.code(), ErrorCode::LlmRateLimit);
                     match decide_retry(
                         &self.policy,
                         &err,
