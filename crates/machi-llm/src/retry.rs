@@ -364,3 +364,5 @@ mod tests {
         assert_eq!(backoff_for_attempt(&policy, 10), MAX_RETRY_BACKOFF);
     }
 }
+
+include!("http_status_matrix.rs");

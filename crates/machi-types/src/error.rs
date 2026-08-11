@@ -451,3 +451,5 @@ mod tests {
         }
     }
 }
+
+include!("error_code_matrix.rs");

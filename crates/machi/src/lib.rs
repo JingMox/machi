@@ -136,8 +136,8 @@ pub use machi_workflow as workflow;
 pub use machi_workflow::{
     AgentOpts, AgentResult as WorkflowAgentResult, BudgetState, DEFAULT_AGENT_BUDGET,
     FileWorkflowRunStore, HostError, Journal, JournalEntry, JournalError, MAX_AGENT_BUDGET,
-    MemoryWorkflowRunStore, PauseKind, StoreError, ValidationError, ValidationReport,
-    WorkflowHostRequest, WorkflowMeta, WorkflowOutcome, WorkflowRunParams, WorkflowRunRecord,
-    WorkflowRunStatus, WorkflowRunStore, default_probe_args, extract_meta, request_hash,
-    run_workflow, validate_script, validate_script_with_agent_budget,
+    MAX_JOURNAL_BYTES, MAX_JOURNAL_ENTRIES, MemoryWorkflowRunStore, PauseKind, StoreError,
+    ValidationError, ValidationReport, WorkflowHostRequest, WorkflowMeta, WorkflowOutcome,
+    WorkflowRunParams, WorkflowRunRecord, WorkflowRunStatus, WorkflowRunStore, default_probe_args,
+    extract_meta, request_hash, run_workflow, validate_script, validate_script_with_agent_budget,
 };

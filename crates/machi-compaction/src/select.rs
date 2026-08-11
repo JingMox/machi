@@ -208,3 +208,5 @@ mod tests {
         }
     }
 }
+
+include!("select_matrix.rs");
