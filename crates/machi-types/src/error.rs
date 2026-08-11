@@ -325,12 +325,18 @@ pub enum RetryClass {
     AuthRefresh,
 }
 
-/// Kernel error with stable code, message, and optional source.
+/// Kernel error with stable code, message, optional transport metadata, and source.
 #[derive(Debug, Clone, thiserror::Error)]
 pub struct MachiError {
     code: ErrorCode,
     message: String,
     retry: RetryClass,
+    /// HTTP status when the error originated from a provider response.
+    http_status: Option<u16>,
+    /// Provider `Retry-After` duration when present.
+    retry_after: Option<std::time::Duration>,
+    /// Provider `x-should-retry` when present.
+    x_should_retry: Option<bool>,
     #[source]
     source: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
@@ -345,6 +351,9 @@ impl MachiError {
             code,
             message: message.into(),
             retry: code.default_retry(),
+            http_status: None,
+            retry_after: None,
+            x_should_retry: None,
             source: None,
         }
     }
@@ -353,6 +362,27 @@ impl MachiError {
     #[must_use]
     pub const fn with_retry(mut self, retry: RetryClass) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// Attach HTTP status for retry policy.
+    #[must_use]
+    pub const fn with_http_status(mut self, status: u16) -> Self {
+        self.http_status = Some(status);
+        self
+    }
+
+    /// Attach `Retry-After` for rate-limit backoff.
+    #[must_use]
+    pub const fn with_retry_after(mut self, after: std::time::Duration) -> Self {
+        self.retry_after = Some(after);
+        self
+    }
+
+    /// Attach `x-should-retry` header semantics.
+    #[must_use]
+    pub const fn with_x_should_retry(mut self, value: bool) -> Self {
+        self.x_should_retry = Some(value);
         self
     }
 
@@ -375,16 +405,46 @@ impl MachiError {
         self.retry
     }
 
+    /// HTTP status when set.
+    #[must_use]
+    pub const fn http_status(&self) -> Option<u16> {
+        self.http_status
+    }
+
+    /// Retry-After when set.
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<std::time::Duration> {
+        self.retry_after
+    }
+
+    /// `x-should-retry` when set.
+    #[must_use]
+    pub const fn x_should_retry(&self) -> Option<bool> {
+        self.x_should_retry
+    }
+
     /// Human-readable message.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// Convenience: cancelled-style runtime error.
+    /// Runtime-domain cancellation.
+    #[must_use]
+    pub fn runtime_cancelled(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::RuntimeCancelled, message)
+    }
+
+    /// LLM-domain cancellation.
+    #[must_use]
+    pub fn llm_cancelled(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::LlmCancelled, message)
+    }
+
+    /// Runtime cancelled (alias of [`Self::runtime_cancelled`]).
     #[must_use]
     pub fn cancelled(message: impl Into<String>) -> Self {
-        Self::new(ErrorCode::RuntimeCancelled, message)
+        Self::runtime_cancelled(message)
     }
 }
 

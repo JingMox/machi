@@ -250,9 +250,15 @@ impl ToolDispatch {
             let stream = tool.execute(ctx.clone(), req.call.arguments.clone()).await;
             drain_terminal(stream).await
         };
-        let limit = meta
-            .timeout
-            .or_else(|| ctx.deadline.map(|d| d.remaining()).filter(|d| !d.is_zero()));
+        // Always cap by turn deadline when present (tool timeout must not exceed SLO).
+        let tool_limit = meta.timeout.filter(|d| !d.is_zero());
+        let deadline_limit = ctx.deadline.map(|d| d.remaining()).filter(|d| !d.is_zero());
+        let limit = match (tool_limit, deadline_limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
         match limit {
             Some(limit) => match timeout(limit.max(Duration::from_millis(1)), fut).await {
                 Ok(r) => r,

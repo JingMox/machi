@@ -5,7 +5,7 @@ use machi_types::{ErrorCode, MachiError, Message, Role, Usage};
 use serde_json::{Value, json};
 use tracing::{Instrument, info_span};
 
-use crate::openai_compat::http_status_error;
+use crate::openai_compat::{http_status_error_with_meta, parse_retry_after_header};
 use crate::sample::{SampleRequest, SampleResponse, ToolChoice};
 use crate::sampler::LlmSampler;
 
@@ -45,16 +45,7 @@ impl OllamaConfig {
 /// Build Ollama `/api/chat` JSON body.
 #[must_use]
 pub fn build_ollama_chat_body(req: &SampleRequest) -> Value {
-    let messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|m| {
-            json!({
-                "role": m.role.as_str(),
-                "content": m.text(),
-            })
-        })
-        .collect();
+    let messages: Vec<Value> = req.messages.iter().map(message_to_ollama).collect();
     let tools = if req.tools.is_empty() || matches!(req.tool_choice, ToolChoice::None) {
         None
     } else {
@@ -85,6 +76,47 @@ pub fn build_ollama_chat_body(req: &SampleRequest) -> Value {
         obj.insert("tools".into(), tools);
     }
     body
+}
+
+fn message_to_ollama(m: &Message) -> Value {
+    match m.role {
+        Role::Tool => {
+            let mut map = serde_json::Map::new();
+            map.insert("role".into(), json!("tool"));
+            map.insert("content".into(), json!(m.text()));
+            if let Some(id) = m.tool_call_id.as_ref() {
+                map.insert("tool_call_id".into(), json!(id.as_str()));
+            }
+            Value::Object(map)
+        }
+        Role::Assistant if !m.tool_calls.is_empty() => {
+            let tool_calls: Vec<Value> = m
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        }
+                    })
+                })
+                .collect();
+            let mut map = serde_json::Map::new();
+            map.insert("role".into(), json!("assistant"));
+            map.insert(
+                "content".into(),
+                json!(m.content.clone().unwrap_or_default()),
+            );
+            map.insert("tool_calls".into(), Value::Array(tool_calls));
+            Value::Object(map)
+        }
+        _ => json!({
+            "role": m.role.as_str(),
+            "content": m.text(),
+        }),
+    }
 }
 
 /// Parse Ollama `/api/chat` non-streaming response.
@@ -132,13 +164,21 @@ pub fn parse_ollama_chat_response(body: &Value) -> Result<SampleResponse, MachiE
         }
         m
     };
-    // Ollama may not always report token usage the same way.
-    let usage = Usage::zero();
+    let prompt_eval = body
+        .get("prompt_eval_count")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0);
+    let eval = body
+        .get("eval_count")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0);
+    let usage = Usage::new(prompt_eval, eval);
     let stop_reason = body
         .get("done_reason")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let _ = Role::Assistant;
     Ok(SampleResponse {
         message,
         usage,
@@ -177,7 +217,10 @@ impl OllamaSampler {
 impl LlmSampler for OllamaSampler {
     async fn sample(&self, request: SampleRequest) -> Result<SampleResponse, MachiError> {
         if request.cancel.is_cancelled() {
-            return Err(MachiError::new(ErrorCode::LlmCancelled, "sample cancelled"));
+            return Err(MachiError::llm_cancelled("sample cancelled"));
+        }
+        if request.deadline.is_some_and(|d| d.is_expired()) {
+            return Err(MachiError::llm_cancelled("sample deadline expired"));
         }
         let body = build_ollama_chat_body(&request);
         let url = self.config.chat_url();
@@ -187,25 +230,50 @@ impl LlmSampler for OllamaSampler {
             machi.provider = "ollama",
         );
         async move {
-            let response = self
-                .client
-                .post(&url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| {
+            let response = tokio::select! {
+                biased;
+                () = request.cancel.cancelled() => {
+                    return Err(MachiError::llm_cancelled("sample cancelled during http"));
+                }
+                res = self.client.post(&url).json(&body).send() => res.map_err(|e| {
                     MachiError::new(ErrorCode::LlmProvider, format!("http request failed: {e}"))
                         .with_retry(machi_types::RetryClass::Backoff)
-                })?;
+                })?,
+            };
             let status = response.status().as_u16();
-            let text = response.text().await.map_err(|e| {
-                MachiError::new(
-                    ErrorCode::LlmProvider,
-                    format!("http body read failed: {e}"),
-                )
-            })?;
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_retry_after_header);
+            let x_should_retry = response
+                .headers()
+                .get("x-should-retry")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" => Some(true),
+                    "false" | "0" | "no" => Some(false),
+                    _ => None,
+                });
+            let text = tokio::select! {
+                biased;
+                () = request.cancel.cancelled() => {
+                    return Err(MachiError::llm_cancelled("sample cancelled during body read"));
+                }
+                text = response.text() => text.map_err(|e| {
+                    MachiError::new(
+                        ErrorCode::LlmProvider,
+                        format!("http body read failed: {e}"),
+                    )
+                })?,
+            };
             if !(200..300).contains(&status) {
-                return Err(http_status_error(status, &text));
+                return Err(http_status_error_with_meta(
+                    status,
+                    &text,
+                    retry_after,
+                    x_should_retry,
+                ));
             }
             let value: Value = serde_json::from_str(&text).map_err(|e| {
                 MachiError::new(

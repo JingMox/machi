@@ -58,7 +58,7 @@ async fn main() {
         .expect("turn 2");
     println!("turn2: {}", o2.output_text);
 
-    let snap = handle2.snapshot().await;
+    let snap = handle2.snapshot().await.expect("snapshot");
     println!("messages: {}", snap.messages.len());
     println!("usage_total: {}", snap.usage.main.total_tokens);
 

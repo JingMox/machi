@@ -139,7 +139,7 @@ impl JsonlPersistence {
             let Some(rel) = tail.iter().position(|b| *b == b'\n') else {
                 // Torn tail: rewrite known-good prefix (drop incomplete last line).
                 let prefix = bytes.get(..offset).unwrap_or(&[]);
-                self.truncate_events_to(prefix).await;
+                self.truncate_events_to(prefix).await?;
                 break;
             };
             let end = offset.saturating_add(rel);
@@ -167,10 +167,15 @@ impl JsonlPersistence {
         Ok(messages)
     }
 
-    /// Best-effort truncate of events file to a known-good byte prefix.
-    async fn truncate_events_to(&self, prefix: &[u8]) {
+    /// Truncate events file to a known-good byte prefix (torn-write repair).
+    async fn truncate_events_to(&self, prefix: &[u8]) -> Result<(), MachiError> {
         let path = self.events_path();
-        let _ = fs::write(&path, prefix).await;
+        fs::write(&path, prefix).await.map_err(|e| {
+            MachiError::new(
+                ErrorCode::StatePersistence,
+                format!("truncate events {}: {e}", path.display()),
+            )
+        })
     }
 
     async fn write_snapshot_file(&self, snap: &ChatStateSnapshot) -> Result<(), MachiError> {
@@ -235,11 +240,26 @@ impl ChatPersistence for JsonlPersistence {
         // Prefer replaying events (source of truth); fall back to snapshot.
         let messages = self.load_events().await?;
         if !messages.is_empty() {
+            // Events are SoT for messages; snapshot is SoT for usage ledger.
+            // Missing snapshot → empty ledger. Corrupt / unreadable snapshot → hard error
+            // (do not silently zero usage when a ledger file exists).
             let usage = match fs::read(self.snapshot_path()).await {
-                Ok(bytes) => serde_json::from_slice::<ChatStateSnapshot>(&bytes)
-                    .map(|s| s.usage)
-                    .unwrap_or_default(),
-                Err(_) => UsageLedger::default(),
+                Ok(bytes) => {
+                    let snap: ChatStateSnapshot = serde_json::from_slice(&bytes).map_err(|e| {
+                        MachiError::new(
+                            ErrorCode::StatePersistence,
+                            format!("parse snapshot usage: {e}"),
+                        )
+                    })?;
+                    snap.usage
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => UsageLedger::default(),
+                Err(e) => {
+                    return Err(MachiError::new(
+                        ErrorCode::StatePersistence,
+                        format!("read snapshot: {e}"),
+                    ));
+                }
             };
             let mut snap = messages_only(messages);
             snap.usage = usage;

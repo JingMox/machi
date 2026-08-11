@@ -73,7 +73,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
         let mut rate_limit_retries = 0u32;
         loop {
             if request.cancel.is_cancelled() {
-                return Err(MachiError::cancelled("sample cancelled"));
+                return Err(MachiError::llm_cancelled("sample cancelled"));
             }
             match self.inner.sample(request.clone()).await {
                 Ok(response) => {
@@ -83,13 +83,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
                         match decide_retry(
                             &self.policy,
                             &err,
-                            &RetryContext {
-                                attempt,
-                                rate_limit_retries,
-                                retry_after: None,
-                                x_should_retry: None,
-                                http_status: None,
-                            },
+                            &retry_ctx(attempt, rate_limit_retries, &err),
                         ) {
                             RetryDecision::Fatal => return Err(err),
                             RetryDecision::Retry { backoff, .. } => {
@@ -106,13 +100,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
                     match decide_retry(
                         &self.policy,
                         &err,
-                        &RetryContext {
-                            attempt,
-                            rate_limit_retries,
-                            retry_after: None,
-                            x_should_retry: None,
-                            http_status: None,
-                        },
+                        &retry_ctx(attempt, rate_limit_retries, &err),
                     ) {
                         RetryDecision::Fatal => return Err(err),
                         RetryDecision::Retry { backoff, .. } => {
@@ -133,7 +121,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
         let mut rate_limit_retries = 0u32;
         loop {
             if request.cancel.is_cancelled() {
-                return Err(MachiError::cancelled("sample stream cancelled"));
+                return Err(MachiError::llm_cancelled("sample stream cancelled"));
             }
             match self.inner.sample_stream(request.clone()).await {
                 Ok(stream) => {
@@ -148,13 +136,7 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
                     match decide_retry(
                         &self.policy,
                         &err,
-                        &RetryContext {
-                            attempt,
-                            rate_limit_retries,
-                            retry_after: None,
-                            x_should_retry: None,
-                            http_status: None,
-                        },
+                        &retry_ctx(attempt, rate_limit_retries, &err),
                     ) {
                         RetryDecision::Fatal => return Err(err),
                         RetryDecision::Retry { backoff, .. } => {
@@ -171,13 +153,23 @@ impl<S: LlmSampler + 'static> LlmSampler for RetryingSampler<S> {
     }
 }
 
+fn retry_ctx(attempt: u32, rate_limit_retries: u32, err: &MachiError) -> RetryContext {
+    RetryContext {
+        attempt,
+        rate_limit_retries,
+        retry_after: err.retry_after(),
+        x_should_retry: err.x_should_retry(),
+        http_status: err.http_status(),
+    }
+}
+
 async fn sleep_cancellable(dur: Duration, cancel: &CancellationToken) -> Result<(), MachiError> {
     if dur.is_zero() {
         return Ok(());
     }
     tokio::select! {
         () = sleep(dur) => Ok(()),
-        () = cancel.cancelled() => Err(MachiError::cancelled("retry sleep cancelled")),
+        () = cancel.cancelled() => Err(MachiError::llm_cancelled("retry sleep cancelled")),
     }
 }
 

@@ -63,10 +63,18 @@ pub fn parse_definition_markdown(raw: &str) -> Result<AgentDefinition, MachiErro
             )
         })
         .unwrap_or(true);
-    let capability = meta
+    let capability = match meta
         .get("capability")
         .or_else(|| meta.get("capability_mode"))
-        .and_then(|s| CapabilityMode::parse(s));
+    {
+        None => None,
+        Some(raw) => Some(CapabilityMode::parse(raw).ok_or_else(|| {
+            MachiError::new(
+                ErrorCode::AgentInvalidDefinition,
+                format!("unknown capability_mode '{raw}' (expected full|read_only|plan)"),
+            )
+        })?),
+    };
     let tools = parse_tool_policy(&meta);
     let def = AgentDefinition {
         name,

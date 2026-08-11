@@ -116,10 +116,13 @@ impl ToolRegistry {
         match mode {
             CapabilityMode::Full => true,
             CapabilityMode::ReadOnly => meta.allowed_in_read_only(),
-            CapabilityMode::Plan => !meta
-                .capabilities
-                .iter()
-                .any(|c| matches!(c, CapabilityFlag::Execute | CapabilityFlag::Spawn)),
+            // Plan is non-mutating: no execute, spawn, or write tools.
+            CapabilityMode::Plan => !meta.capabilities.iter().any(|c| {
+                matches!(
+                    c,
+                    CapabilityFlag::Execute | CapabilityFlag::Spawn | CapabilityFlag::Write
+                )
+            }),
         }
     }
 

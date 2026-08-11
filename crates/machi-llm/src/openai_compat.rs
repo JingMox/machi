@@ -69,9 +69,38 @@ pub fn build_chat_completions_body(req: &SampleRequest) -> Value {
         map.insert("temperature".into(), json!(temp));
     }
     if let Some(fmt) = &req.response_format {
-        map.insert("response_format".into(), fmt.clone());
+        // Accept either a raw JSON Schema object or an already-wrapped OpenAI envelope.
+        let wire = if fmt.get("type").and_then(Value::as_str) == Some("json_schema")
+            || fmt.get("type").and_then(Value::as_str) == Some("json_object")
+        {
+            fmt.clone()
+        } else {
+            openai_json_schema_format(fmt)
+        };
+        map.insert("response_format".into(), wire);
     }
     Value::Object(map)
+}
+
+/// Parse `Retry-After` as seconds (integer). HTTP-date forms are not supported (returns `None`).
+#[must_use]
+pub fn parse_retry_after_header(raw: &str) -> Option<std::time::Duration> {
+    let s = raw.trim();
+    let secs: u64 = s.parse().ok()?;
+    Some(std::time::Duration::from_secs(secs.min(7 * 24 * 3600)))
+}
+
+/// Wrap a JSON Schema object as an OpenAI-compatible `response_format` envelope.
+#[must_use]
+pub fn openai_json_schema_format(schema: &Value) -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "machi_output",
+            "strict": true,
+            "schema": schema,
+        }
+    })
 }
 
 fn message_to_openai(msg: &Message) -> Value {
@@ -254,21 +283,45 @@ fn parse_usage(raw: Option<&Value>) -> Usage {
     Usage::new(input, output)
 }
 
-/// Map HTTP status to a typed LLM error (single path: W2 `classify_http_status`).
+/// Map HTTP status (+ optional headers) to a typed LLM error.
+///
+/// Single construction path for provider HTTP failures; sets transport metadata
+/// so [`crate::retry::decide_retry`] can honor `Retry-After` / status policy.
 #[must_use]
 pub fn http_status_error(status: u16, body: &str) -> MachiError {
+    http_status_error_with_meta(status, body, None, None)
+}
+
+/// Like [`http_status_error`] with explicit header semantics.
+#[must_use]
+pub fn http_status_error_with_meta(
+    status: u16,
+    body: &str,
+    retry_after: Option<std::time::Duration>,
+    x_should_retry: Option<bool>,
+) -> MachiError {
     use crate::retry::{HttpRetryClass, classify_http_status, error_code_for_http};
     use machi_types::RetryClass;
 
     let snippet: String = body.chars().take(256).collect();
-    let class = classify_http_status(status, None);
+    let class = classify_http_status(status, x_should_retry);
     let code = error_code_for_http(status, class);
+    // Auth is fatal unless a credential-refresh adapter explicitly sets AuthRefresh.
     let retry = match (code, class) {
-        (ErrorCode::LlmAuth, _) => RetryClass::AuthRefresh,
+        (ErrorCode::LlmAuth, _) => RetryClass::Never,
         (_, HttpRetryClass::RateLimited | HttpRetryClass::Retry) => RetryClass::Backoff,
         (_, HttpRetryClass::Fatal) => RetryClass::Never,
     };
-    MachiError::new(code, format!("openai-compatible HTTP {status}: {snippet}")).with_retry(retry)
+    let mut err = MachiError::new(code, format!("openai-compatible HTTP {status}: {snippet}"))
+        .with_retry(retry)
+        .with_http_status(status);
+    if let Some(after) = retry_after {
+        err = err.with_retry_after(after);
+    }
+    if let Some(hint) = x_should_retry {
+        err = err.with_x_should_retry(hint);
+    }
+    err
 }
 
 #[cfg(feature = "openai")]
@@ -278,8 +331,8 @@ mod client {
     use tracing::{Instrument, info_span};
 
     use super::{
-        OpenAiCompatConfig, build_chat_completions_body, http_status_error,
-        parse_chat_completions_response,
+        OpenAiCompatConfig, build_chat_completions_body, http_status_error_with_meta,
+        parse_chat_completions_response, parse_retry_after_header,
     };
     use crate::sample::{SampleRequest, SampleResponse};
     use crate::sampler::LlmSampler;
@@ -338,20 +391,51 @@ mod client {
                     req = req.bearer_auth(&self.config.api_key);
                 }
 
-                let response = req.send().await.map_err(|e| {
-                    MachiError::new(ErrorCode::LlmProvider, format!("http request failed: {e}"))
-                        .with_retry(machi_types::RetryClass::Backoff)
-                })?;
+                let response = tokio::select! {
+                    biased;
+                    () = request.cancel.cancelled() => {
+                        return Err(MachiError::llm_cancelled("sample cancelled during http"));
+                    }
+                    res = req.send() => res.map_err(|e| {
+                        MachiError::new(ErrorCode::LlmProvider, format!("http request failed: {e}"))
+                            .with_retry(machi_types::RetryClass::Backoff)
+                    })?,
+                };
 
                 let status = response.status().as_u16();
-                let text = response.text().await.map_err(|e| {
-                    MachiError::new(
-                        ErrorCode::LlmProvider,
-                        format!("http body read failed: {e}"),
-                    )
-                })?;
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_retry_after_header);
+                let x_should_retry = response
+                    .headers()
+                    .get("x-should-retry")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+                        "true" | "1" | "yes" => Some(true),
+                        "false" | "0" | "no" => Some(false),
+                        _ => None,
+                    });
+                let text = tokio::select! {
+                    biased;
+                    () = request.cancel.cancelled() => {
+                        return Err(MachiError::llm_cancelled("sample cancelled during body read"));
+                    }
+                    text = response.text() => text.map_err(|e| {
+                        MachiError::new(
+                            ErrorCode::LlmProvider,
+                            format!("http body read failed: {e}"),
+                        )
+                    })?,
+                };
                 if !(200..300).contains(&status) {
-                    return Err(http_status_error(status, &text));
+                    return Err(http_status_error_with_meta(
+                        status,
+                        &text,
+                        retry_after,
+                        x_should_retry,
+                    ));
                 }
                 let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
                     MachiError::new(
@@ -372,7 +456,7 @@ pub use client::OpenAiCompatSampler;
 
 #[cfg(test)]
 mod tests {
-    use machi_types::{Message, ToolCallId};
+    use machi_types::{ErrorCode, Message, ToolCallId};
     use serde_json::json;
 
     use super::*;
@@ -419,6 +503,49 @@ mod tests {
         assert_eq!(resp.usage.input_tokens, 3);
         assert_eq!(resp.usage.output_tokens, 2);
         assert_eq!(resp.stop_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn response_format_wraps_raw_schema() {
+        let schema = json!({"type": "object", "properties": {"ok": {"type": "boolean"}}});
+        let req = SampleRequest {
+            model: "gpt-test".into(),
+            messages: vec![Message::user("hi")],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+            response_format: Some(schema.clone()),
+            max_output_tokens: None,
+            temperature: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            deadline: None,
+        };
+        let body = build_chat_completions_body(&req);
+        let fmt = body.get("response_format").expect("response_format");
+        assert_eq!(fmt.get("type"), Some(&json!("json_schema")));
+        assert_eq!(fmt.pointer("/json_schema/schema"), Some(&schema));
+    }
+
+    #[test]
+    fn parse_retry_after_seconds() {
+        assert_eq!(
+            parse_retry_after_header("12"),
+            Some(std::time::Duration::from_secs(12))
+        );
+        assert_eq!(parse_retry_after_header("nope"), None);
+    }
+
+    #[test]
+    fn http_meta_sets_transport_fields() {
+        let err = http_status_error_with_meta(
+            429,
+            "slow down",
+            Some(std::time::Duration::from_secs(3)),
+            Some(true),
+        );
+        assert_eq!(err.code(), ErrorCode::LlmRateLimit);
+        assert_eq!(err.http_status(), Some(429));
+        assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(3)));
+        assert_eq!(err.x_should_retry(), Some(true));
     }
 
     #[test]

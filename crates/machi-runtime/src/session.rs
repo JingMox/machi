@@ -163,7 +163,7 @@ impl Session {
         metrics: &dyn MetricsSink,
         store: Option<&dyn ChatPersistence>,
     ) -> Result<TurnOutcome, MachiError> {
-        let snap = handle.snapshot().await;
+        let snap = handle.snapshot().await?;
         let mut local = VecConversationState::from_messages(snap.messages);
         let outcome = self
             .run_turn_with_metrics(agent, sampler, &mut local, input, options, metrics)
@@ -301,7 +301,7 @@ mod tests {
             .expect("t2");
         assert_eq!(o1.output_text, "alpha");
         assert_eq!(o2.output_text, "beta");
-        let snap = handle.snapshot().await;
+        let snap = handle.snapshot().await.expect("snapshot");
         assert!(snap.messages.len() >= 4);
         assert!(snap.usage.main.total_tokens > 0);
         handle.shutdown().await;
@@ -377,7 +377,7 @@ mod tests {
             .expect("t2");
         assert_eq!(o2.output_text, "two");
         // History includes both turns after reload.
-        assert!(h2.messages().await.len() >= 4);
+        assert!(h2.messages().await.expect("msgs").len() >= 4);
         h2.shutdown().await;
     }
 }
