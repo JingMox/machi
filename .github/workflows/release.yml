@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,4 @@ permissions:
 
 jobs:
   release:
-    uses: qntx/workflows/.github/workflows/release-rust.yml@main
-    with:
-      bin: machi
-      package: machi
+    uses: qntx/workflows/.github/workflows/release.yml@main
