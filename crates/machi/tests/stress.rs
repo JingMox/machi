@@ -302,10 +302,42 @@ mod stress {
         assert!(run.success);
     }
 
-    /// W6: journal rejects growth past `MAX_JOURNAL_BYTES` (64 MiB contract).
+    /// W6: journal load rejects files larger than `MAX_JOURNAL_BYTES` (64 MiB).
     #[test]
-    fn journal_byte_cap_is_64_mib() {
-        assert_eq!(machi::workflow::MAX_JOURNAL_BYTES, 64 * 1024 * 1024);
+    fn journal_load_rejects_over_byte_cap() {
+        use std::fs::OpenOptions;
+        use std::io::{Seek, SeekFrom, Write};
+
+        use machi::{Journal, JournalError, MAX_JOURNAL_BYTES};
+
+        assert_eq!(MAX_JOURNAL_BYTES, 64 * 1024 * 1024);
+
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("cap.jsonl");
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .expect("create");
+            writeln!(f, "# machi-journal/2").expect("hdr");
+            f.seek(SeekFrom::Start(MAX_JOURNAL_BYTES)).expect("seek");
+            f.write_all(b"x").expect("grow past cap");
+        }
+        let err = Journal::load(path).expect_err("oversize must fail");
+        let ok = match &err {
+            JournalError::UnsafeRestore { limit, reason } => {
+                *limit == MAX_JOURNAL_BYTES
+                    && (reason.contains("exceeds") || reason.contains("byte"))
+            }
+            JournalError::Io(e) => {
+                let msg = e.to_string();
+                msg.contains("exceeds") || msg.contains("byte")
+            }
+            _ => false,
+        };
+        assert!(ok, "expected oversize restore/io reject, got {err:?}");
     }
 
     /// W6: torn-write fuzz — incomplete tails of varying lengths are repaired.

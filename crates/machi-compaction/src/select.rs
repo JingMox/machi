@@ -31,6 +31,8 @@ pub fn is_safe_split(messages: &[Message], split_idx: usize) -> bool {
 /// and the tail does not begin on a `Tool` role.
 ///
 /// Returns `None` when snapping would keep nothing (entire list unsafe/consumed).
+/// `split_idx == messages.len()` is always safe (drop whole list / keep only system via
+/// [`apply_range`]).
 #[must_use]
 pub fn snap_split_forward(messages: &[Message], mut split_idx: usize) -> Option<usize> {
     let n = messages.len();
@@ -45,20 +47,20 @@ pub fn snap_split_forward(messages: &[Message], mut split_idx: usize) -> Option<
     }
     while split_idx < n {
         if is_safe_split(messages, split_idx) {
-            // Also ensure we did not leave a hanging assistant tool-call without its tools
-            // entirely in the compacted prefix — that is fine; hang is when tools are kept
-            // without assistant. Safe if first kept is not Tool.
+            // Safe if first kept is not Tool (orphan results without assistant).
             return Some(split_idx);
         }
         split_idx = split_idx.saturating_add(1);
     }
-    None
+    // End-of-list is a safe split (compact away entire non-system body).
+    Some(n)
 }
 
 /// Choose a split that keeps at most `keep_tail` messages from the end,
 /// after preserving a leading system message, then snap for tool-pair safety.
 ///
 /// Returns `None` when no compaction is needed or no safe split exists.
+/// `split_idx == messages.len()` is allowed (keep system only / empty tail).
 #[must_use]
 pub fn select_compaction_range(messages: &[Message], keep_tail: usize) -> Option<CompactionRange> {
     if messages.is_empty() || keep_tail == 0 {
@@ -82,7 +84,7 @@ pub fn select_compaction_range(messages: &[Message], keep_tail: usize) -> Option
     }
 
     let split_idx = snap_split_forward(messages, split_idx)?;
-    if split_idx >= messages.len() || split_idx == 0 {
+    if split_idx == 0 {
         return None;
     }
     Some(CompactionRange { split_idx })
