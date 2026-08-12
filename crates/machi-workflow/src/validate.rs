@@ -1,8 +1,7 @@
 //! Dry-run validation of workflow scripts (meta + stub host path).
 //!
-//! Aligns with Grok Build's `validate_script` contract: extract meta, then run
-//! the script against a **probe host** that never calls models. Failures from
-//! compile/runtime or hard script errors surface as [`ValidationError`].
+//! Extract meta, then run the script against a **probe host** that never calls
+//! models. Compile/runtime failures surface as [`ValidationError`].
 
 use std::thread;
 

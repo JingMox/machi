@@ -1,11 +1,9 @@
 //! Reference toolkit tools (cwd-jailed filesystem and shell).
 //!
-//! Hosts register the tools they want; the kernel does not install them by default.
-//!
 //! Shell requires an explicit isolation choice ([`ShellTool::trusted`] or
-//! [`ShellTool::sandboxed`]). [`default_toolkit`] uses **trusted** shell for
-//! demos — production hosts should pass a real [`machi_sandbox::SandboxBackend`]
-//! (e.g. feature `seatbelt` → `SeatbeltBackend` on macOS).
+//! [`ShellTool::sandboxed`]). [`default_toolkit`] uses trusted shell; swap in
+//! [`ShellTool::sandboxed`] with a [`machi_sandbox::SandboxBackend`] for
+//! process isolation (e.g. feature `seatbelt` → `SeatbeltBackend` on macOS).
 
 #![forbid(unsafe_code)]
 

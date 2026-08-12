@@ -1,9 +1,7 @@
 //! Process-level sandbox policy and backends for tool command wrapping.
 //!
-//! Maturity: **core** (policy + port); OS backends are feature-gated.
-//!
-//! This is **not** a micro-VM. Hardware isolation lives out-of-tree (e.g. bux).
-//! This crate wraps [`tokio::process::Command`] with host-kernel policies.
+//! OS backends are feature-gated. This is not a micro-VM: it wraps
+//! [`tokio::process::Command`] with host-kernel policies.
 
 #![forbid(unsafe_code)]
 
@@ -12,11 +10,10 @@ mod seatbelt;
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-use tokio::process::Command;
-
 #[cfg(all(feature = "seatbelt", target_os = "macos"))]
 pub use seatbelt::{SANDBOX_EXEC, SeatbeltBackend, build_profile};
+use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 
 /// Filesystem access granted to a sandboxed command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,10 +92,10 @@ pub trait SandboxBackend: Send + Sync {
     fn wrap(&self, policy: &SandboxPolicy, cmd: Command) -> Result<Command, SandboxError>;
 }
 
-/// Explicit non-enforcing backend.
+/// Non-enforcing backend: returns the command unchanged.
 ///
-/// Prefer [`TrustedExecution`] on tools when the host opts out. Use this when a
-/// [`SandboxBackend`] slot is required but enforcement is intentionally off.
+/// Prefer [`TrustedExecution`] on tools when opting out of process sandboxing.
+/// Use this when a [`SandboxBackend`] value is required without enforcement.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoSandbox;
 
@@ -112,10 +109,9 @@ impl SandboxBackend for NoSandbox {
     }
 }
 
-/// Unit marker: the host opts out of process sandboxing for this tool.
+/// Marker type: the host opts out of process sandboxing for a tool.
 ///
-/// Construct tools with an API that takes this marker so the opt-out is
-/// explicit in source (never a silent default).
+/// Tool constructors take this marker so opt-out is explicit at the call site.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TrustedExecution;
 

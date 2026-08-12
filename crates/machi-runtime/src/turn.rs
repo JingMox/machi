@@ -85,9 +85,9 @@ pub struct TurnOptions {
     pub max_output_tokens: Option<u32>,
     /// Prefer [`LlmSampler::sample_stream`] and aggregate into a full response.
     pub use_stream: bool,
-    /// Lifecycle contributors (W3.5).
+    /// Lifecycle contributors.
     pub contributors: Arc<dyn TurnLifecycleContributor>,
-    /// Optional mid-turn user interjections drained before each sample (W3.6).
+    /// Optional mid-turn user interjections drained before each sample.
     pub interject_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Message>>>>,
     /// Context window size for preflight overflow (tokens). `None` disables check.
     pub context_window_tokens: Option<u32>,
@@ -254,14 +254,14 @@ impl TurnOptions {
         self
     }
 
-    /// Install lifecycle contributors (W3.5).
+    /// Install lifecycle contributors.
     #[must_use]
     pub fn with_contributors(mut self, contributors: Arc<dyn TurnLifecycleContributor>) -> Self {
         self.contributors = contributors;
         self
     }
 
-    /// Mid-turn interjection channel drained before each sample (W3.6).
+    /// Mid-turn interjection channel drained before each sample.
     #[must_use]
     pub fn with_interject_rx(
         mut self,
@@ -271,7 +271,7 @@ impl TurnOptions {
         self
     }
 
-    /// Enable preflight context overflow checks (W3.2).
+    /// Enable preflight context overflow checks.
     #[must_use]
     pub const fn with_context_window(mut self, tokens: u32) -> Self {
         self.context_window_tokens = Some(tokens);

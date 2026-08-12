@@ -49,7 +49,7 @@ pub enum ToolProgress {
         /// Chunk body.
         text: String,
     },
-    /// Incremental partial output (W3.3).
+    /// Incremental partial output.
     Partial {
         /// UTF-8-safe delta slice.
         delta: String,

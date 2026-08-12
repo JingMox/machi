@@ -1,6 +1,5 @@
-//! Compaction range selection with tool-pair invariant (W4.1).
+//! Compaction range selection with tool-pair invariant.
 //!
-//! Maturity: **core**
 //!
 //! A split index must never land inside an assistant tool-call run followed by
 //! its tool results. Snapping moves the split past any orphaned tool messages.
@@ -139,9 +138,10 @@ pub fn tool_pair_invariant_holds(messages: &[Message]) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "unit tests")]
 mod tests {
-    use super::*;
     use machi_types::{ToolCall, ToolCallId};
     use serde_json::json;
+
+    use super::*;
 
     fn tool_call(name: &str) -> ToolCall {
         ToolCall {

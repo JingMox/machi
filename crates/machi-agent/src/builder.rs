@@ -121,7 +121,7 @@ impl AgentBuilder {
         })?;
         definition.validate()?;
 
-        // Definition-level allowed_tools / denylist applied at resolution (W5.4).
+        // Definition-level allowed_tools / denylist applied at resolution.
         let filtered: Vec<SharedTool> = self
             .tools
             .into_iter()

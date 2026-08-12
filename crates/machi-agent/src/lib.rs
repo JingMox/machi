@@ -2,8 +2,6 @@
 //!
 //! An [`Agent`] does not run a `ReAct` loop. [`machi_runtime::TurnRuntime`]
 //! (or a product host) executes turns against an agent.
-//!
-//! Maturity: **core** (definitions, discovery, registry, builtins).
 
 #![forbid(unsafe_code)]
 

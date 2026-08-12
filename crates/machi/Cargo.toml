@@ -42,7 +42,7 @@ machi-obs = { workspace = true, optional = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 serde_json = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 tokio-util = { workspace = true }
 
 [[example]]

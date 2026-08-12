@@ -1,6 +1,5 @@
-//! Rough token estimation for preflight overflow checks (W3.2).
+//! Rough token estimation for preflight overflow checks.
 //!
-//! Maturity: **core**
 //!
 //! Heuristic: text bytes / 4; images fixed at [`IMAGE_TOKEN_COST`].
 

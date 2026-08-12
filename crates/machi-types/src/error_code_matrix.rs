@@ -1,4 +1,4 @@
-// W6: ErrorCode contract matrix.
+// ErrorCode contract matrix.
 #[cfg(test)]
 #[allow(non_snake_case, clippy::missing_assert_message, reason = "matrix names embed ErrorCode variants")]
 mod error_code_matrix {
@@ -343,7 +343,6 @@ mod error_code_matrix {
         }
         let _ = c.default_retry();
     }
-
 
     #[test]
     fn code_LlmIdleTimeout_as_str_nonempty_and_domain() {

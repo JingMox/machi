@@ -1,4 +1,4 @@
-//! Multi-level agent discovery with shadowing rules (W5.1).
+//! Multi-level agent discovery with shadowing rules.
 //!
 //! Precedence (later wins except user↛builtin):
 //! 1. Builtin catalogue
@@ -225,11 +225,11 @@ pub fn project_agent_dirs(cwd: impl AsRef<Path>) -> Vec<PathBuf> {
     out
 }
 
-/// Full multi-level resolve with shadowing (W5.1).
+/// Full multi-level resolve with shadowing.
 ///
 /// # Errors
 ///
-/// I/O failures from strict project/user discovery (non-strict soft-skips bad files).
+/// I/O failures from strict project/user discovery (non-strict mode skips unreadable files).
 pub fn resolve_agents(cwd: impl AsRef<Path>) -> Result<Vec<AgentDefinition>, MachiError> {
     let cwd = cwd.as_ref();
     let mut map: BTreeMap<String, AgentDefinition> = BTreeMap::new();

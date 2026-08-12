@@ -1,4 +1,4 @@
-//! Persistence ports for conversation snapshots (W4.4 incremental append).
+//! Persistence ports for conversation snapshots (incremental append).
 
 use async_trait::async_trait;
 use machi_types::{MachiError, Message};

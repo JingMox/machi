@@ -1,6 +1,4 @@
 //! Optional live [`TurnEvent`] emission for embedders.
-//!
-//! Maturity: **core**. When no bus is attached, emit is a no-op.
 
 use machi_protocol::{TurnEvent, TurnEventKind};
 use machi_tools::EventBus;

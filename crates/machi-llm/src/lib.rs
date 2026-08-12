@@ -1,11 +1,9 @@
 //! LLM sampling contracts for the Machi kernel.
 //!
 //! - Always: [`LlmSampler`], [`MockSampler`], wire helpers in [`openai_compat`].
-//! - Decorators: [`RetryingSampler`], [`BreakerSampler`] (W2).
+//! - Decorators: [`RetryingSampler`], [`BreakerSampler`].
 //! - Feature `openai`: [`OpenAiCompatSampler`] HTTP client.
 //! - Feature `ollama`: [`OllamaSampler`] HTTP client.
-//!
-//! Maturity: **core** (sampler, retry, breaker); **stable** HTTP clients behind features.
 
 #![forbid(unsafe_code)]
 

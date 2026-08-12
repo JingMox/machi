@@ -1,6 +1,5 @@
-//! JSONL event log + periodic snapshot persistence (W4.4).
+//! JSONL event log + periodic snapshot persistence.
 //!
-//! Maturity: **core**
 //!
 //! Layout under a session directory:
 //! - `events.jsonl` — append-only message events (with torn-write repair on load)
@@ -237,12 +236,9 @@ impl ChatPersistence for JsonlPersistence {
     }
 
     async fn load(&self) -> Result<Option<ChatStateSnapshot>, MachiError> {
-        // Prefer replaying events (source of truth); fall back to snapshot.
+        // Events are authoritative for messages; snapshot holds the usage ledger.
         let messages = self.load_events().await?;
         if !messages.is_empty() {
-            // Events are SoT for messages; snapshot is SoT for usage ledger.
-            // Missing snapshot → empty ledger. Corrupt / unreadable snapshot → hard error
-            // (do not silently zero usage when a ledger file exists).
             let usage = match fs::read(self.snapshot_path()).await {
                 Ok(bytes) => {
                     let snap: ChatStateSnapshot = serde_json::from_slice(&bytes).map_err(|e| {
@@ -309,8 +305,9 @@ pub fn session_jsonl_dir(root: impl AsRef<Path>, session_id: &str) -> PathBuf {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "unit tests")]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn append_and_reload() {

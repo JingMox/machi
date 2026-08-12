@@ -1,6 +1,4 @@
-//! Machi — embeddable multi-agent runtime kernel (v1 clean break).
-//!
-//! # Layers (implemented)
+//! Machi — embeddable multi-agent runtime kernel.
 //!
 //! | Crate | Role |
 //! |-------|------|
@@ -16,13 +14,8 @@
 //! | `machi-runtime` | turn, session, host, workflow adapter |
 //! | `machi-workflow` | Rhai engine, journal, validate (no LLM) |
 //!
-//! # Vertical slice (canonical product path)
-//!
-//! Session / handle → `TurnRuntime` → tools(+toolkit) → approval / stop gates →
-//! metrics → `SessionHost` spawn and/or journaled workflow (+ scratch/template).
-//!
-//! **Not implemented yet (do not assume):** hooks crate, long-term memory crate,
-//! proc-macro derive, full OTEL SDK export, MCP.
+//! Session / handle → `TurnRuntime` → tools → gates → metrics →
+//! `SessionHost` spawn and/or journaled workflow.
 //!
 //! Optional host capabilities (e.g. `git_diff_since`) require explicit setup.
 

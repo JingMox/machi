@@ -1,4 +1,4 @@
-//! Token usage ledger for sessions, prompts, and models (W4.3).
+//! Token usage ledger for sessions, prompts, and models.
 
 use std::collections::BTreeMap;
 
