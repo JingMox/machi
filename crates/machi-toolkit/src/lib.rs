@@ -1,6 +1,10 @@
 //! Reference toolkit tools (cwd-jailed filesystem and shell).
 //!
 //! Hosts register the tools they want; the kernel does not install them by default.
+//!
+//! Shell requires an explicit isolation choice ([`ShellTool::trusted`] or
+//! [`ShellTool::sandboxed`]). [`default_toolkit`] uses **trusted** shell for
+//! demos — production hosts should swap in a real [`machi_sandbox::SandboxBackend`].
 
 #![forbid(unsafe_code)]
 
@@ -17,13 +21,17 @@ use std::sync::Arc;
 
 pub use glob_files::{GlobTool, glob_match};
 pub use grep::GrepTool;
+use machi_sandbox::TrustedExecution;
 use machi_tools::SharedTool;
 pub use path_util::{PathJailError, resolve_jailed};
 pub use read_file::ReadFileTool;
 pub use shell::ShellTool;
 pub use write_file::WriteFileTool;
 
-/// Convenience bundle: read / write / grep / glob / shell with a shared jail root.
+/// Convenience bundle: read / write / grep / glob / **trusted** shell.
+///
+/// Shell is constructed with [`TrustedExecution`] (explicit opt-out of process
+/// sandbox). Replace shell with [`ShellTool::sandboxed`] for production.
 #[must_use]
 pub fn default_toolkit(jail: impl Into<PathBuf>) -> Vec<SharedTool> {
     let root = jail.into();
@@ -32,6 +40,6 @@ pub fn default_toolkit(jail: impl Into<PathBuf>) -> Vec<SharedTool> {
         Arc::new(WriteFileTool::with_jail(root.clone())),
         Arc::new(GrepTool::with_jail(root.clone())),
         Arc::new(GlobTool::with_jail(root.clone())),
-        Arc::new(ShellTool::with_jail(root)),
+        Arc::new(ShellTool::trusted(root, TrustedExecution)),
     ]
 }

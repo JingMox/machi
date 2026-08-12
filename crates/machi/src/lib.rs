@@ -96,6 +96,12 @@ pub use machi_runtime::{
     WorkflowSideEffects, run_workflow_configured, run_workflow_configured_with_events,
     run_workflow_on_host, run_workflow_on_host_with_metrics,
 };
+#[cfg(feature = "sandbox")]
+pub use machi_sandbox as sandbox;
+#[cfg(feature = "sandbox")]
+pub use machi_sandbox::{
+    FsPolicy, NetPolicy, NoSandbox, SandboxBackend, SandboxError, SandboxPolicy, TrustedExecution,
+};
 #[cfg(feature = "state")]
 pub use machi_state as state;
 #[cfg(feature = "state")]

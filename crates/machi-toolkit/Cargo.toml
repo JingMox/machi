@@ -10,6 +10,7 @@ categories = ["filesystem", "asynchronous"]
 
 [dependencies]
 async-trait = { workspace = true }
+machi-sandbox = { workspace = true }
 machi-tools = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

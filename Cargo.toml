@@ -26,6 +26,7 @@ machi-toolkit = { version = "0.9.0", path = "crates/machi-toolkit" }
 machi-state = { version = "0.9.0", path = "crates/machi-state" }
 machi-compaction = { version = "0.9.0", path = "crates/machi-compaction" }
 machi-obs = { version = "0.9.0", path = "crates/machi-obs" }
+machi-sandbox = { version = "0.9.0", path = "crates/machi-sandbox" }
 
 async-trait = "0.1.89"
 futures = "0.3.32"
