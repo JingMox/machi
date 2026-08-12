@@ -15,6 +15,11 @@ pub enum GateDecision {
         /// Reminder text appended to the conversation.
         reminder: String,
     },
+    /// Requirement unmet after budgeted retries — turn must fail closed.
+    Fail {
+        /// Human-readable reason (surfaced as [`machi_types::ErrorCode::RuntimeGate`]).
+        reason: String,
+    },
 }
 
 /// Extensible stop-gate. Gates run in order; first non-[`GateDecision::Complete`] wins.
@@ -95,7 +100,7 @@ impl GateChain {
         for gate in &self.gates {
             match gate.evaluate(agent, state, retries_used) {
                 GateDecision::Complete => {}
-                cont @ GateDecision::Continue { .. } => return cont,
+                other => return other,
             }
         }
         GateDecision::Complete
@@ -123,7 +128,12 @@ fn completion_gate(
         return None;
     }
     if retries_used >= req.max_retries {
-        return None;
+        return Some(GateDecision::Fail {
+            reason: format!(
+                "required tool '{}' not called after {} reminder(s)",
+                req.tool, req.max_retries
+            ),
+        });
     }
     Some(GateDecision::Continue {
         reminder: req.reminder.clone(),
@@ -213,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn max_retries_then_complete_without_tool() {
+    fn max_retries_then_fail_without_tool() {
         let agent = AgentBuilder::named("a")
             .model("mock")
             .completion(CompletionRequirement {
@@ -232,10 +242,14 @@ mod tests {
             evaluate_stop_gates(&agent, &state, 1),
             GateDecision::Continue { .. }
         ));
-        // Exhausted: complete anyway (fail-open after budgeted reminders).
-        assert_eq!(
-            evaluate_stop_gates(&agent, &state, 2),
-            GateDecision::Complete
+        // Exhausted: fail-closed (required tool never called).
+        assert!(
+            matches!(
+                evaluate_stop_gates(&agent, &state, 2),
+                GateDecision::Fail { ref reason } if reason.contains("submit")
+            ),
+            "{:?}",
+            evaluate_stop_gates(&agent, &state, 2)
         );
     }
 

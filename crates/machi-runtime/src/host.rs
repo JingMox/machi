@@ -17,9 +17,10 @@ use machi_agent::{
 };
 use machi_llm::LlmSampler;
 use machi_obs::{NoopMetrics, SharedMetrics, record_spawn};
+use machi_protocol::TurnEventKind;
 use machi_state::ChatStateHandle;
-use machi_tools::SharedTool;
 use machi_tools::registry::CapabilityMode;
+use machi_tools::{EventBus, SharedTool};
 use machi_types::{AgentId, ErrorCode, MachiError, Message, Usage};
 use machi_workflow::{WorkflowRunStatus, WorkflowRunStore};
 use serde_json::Value;
@@ -67,6 +68,8 @@ pub struct SpawnOpts {
     pub max_output_tokens: Option<u64>,
     /// Nesting depth of this spawn (`0` = first level under the host).
     pub depth: u32,
+    /// Parent turn event bus (spawn lifecycle events use this stream).
+    pub events: Option<EventBus>,
 }
 
 impl SpawnOpts {
@@ -87,6 +90,7 @@ impl SpawnOpts {
             resume_from: None,
             max_output_tokens: None,
             depth: 0,
+            events: None,
         }
     }
 
@@ -165,6 +169,13 @@ impl SpawnOpts {
     #[must_use]
     pub fn with_resume_from(mut self, id: impl Into<String>) -> Self {
         self.resume_from = Some(id.into());
+        self
+    }
+
+    /// Attach parent event bus for spawn lifecycle on the parent stream.
+    #[must_use]
+    pub fn with_events(mut self, events: EventBus) -> Self {
+        self.events = Some(events);
         self
     }
 }
@@ -494,6 +505,15 @@ impl InProcessHost {
         self.reserve_against_budget(budget)
     }
 
+    /// Refund a slot reserved before the child turn actually starts.
+    fn release_slot(&self) {
+        self.spent
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+                Some(s.saturating_sub(1))
+            })
+            .ok();
+    }
+
     fn reserve_against_budget(&self, budget: u64) -> Result<(), MachiError> {
         loop {
             let spent = self.spent.load(Ordering::Acquire);
@@ -550,6 +570,11 @@ impl InProcessHost {
         builder.build()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::excessive_nesting,
+        reason = "spawn_one owns budget/isolation/turn/events end-to-end"
+    )]
     async fn spawn_one(&self, opts: SpawnOpts) -> Result<AgentRunResult, MachiError> {
         let agent_id = AgentId::generate();
         let label = opts.label.clone();
@@ -576,15 +601,76 @@ impl InProcessHost {
             // Budget + concurrency apply to resume_from (no free spawn path).
             let _permit = self.try_acquire_concurrency()?;
             self.reserve_slot()?;
-            if let Some(resumed) = self.try_resume(&opts)? {
-                record_spawn(self.metrics.as_ref(), "ok");
-                return Ok(resumed);
+            match self.try_resume(&opts) {
+                Ok(Some(resumed)) => {
+                    record_spawn(self.metrics.as_ref(), "ok");
+                    return Ok(resumed);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    self.release_slot();
+                    return Err(e);
+                }
             }
 
-            let isolation_env = self.isolation.prepare(&opts).await?;
+            if let Some(bus) = &opts.events {
+                bus.emit(
+                    None,
+                    Some(opts.depth),
+                    TurnEventKind::SpawnStarted {
+                        child_agent_id: agent_id.to_string(),
+                        label: label.clone(),
+                        depth: opts.depth,
+                    },
+                );
+            }
+            let emit_spawn_failed = |bus: &EventBus| {
+                bus.emit(
+                    None,
+                    Some(opts.depth),
+                    TurnEventKind::SpawnFinished {
+                        child_agent_id: agent_id.to_string(),
+                        label: label.clone(),
+                        depth: opts.depth,
+                        success: false,
+                        cancelled: false,
+                    },
+                );
+            };
+
+            let isolation_env = match self.isolation.prepare(&opts).await {
+                Ok(env) => env,
+                Err(e) => {
+                    self.release_slot();
+                    if let Some(bus) = &opts.events {
+                        emit_spawn_failed(bus);
+                    }
+                    return Err(e);
+                }
+            };
             let started = Instant::now();
-            let agent = self.build_child(&opts)?;
-            let mut state = self.child_state(&opts).await?;
+            let agent = match self.build_child(&opts) {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = self.isolation.cleanup(&isolation_env).await;
+                    self.release_slot();
+                    if let Some(bus) = &opts.events {
+                        emit_spawn_failed(bus);
+                    }
+                    return Err(e);
+                }
+            };
+            let mut state = match self.child_state(&opts).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = self.isolation.cleanup(&isolation_env).await;
+                    self.release_slot();
+                    if let Some(bus) = &opts.events {
+                        emit_spawn_failed(bus);
+                    }
+                    return Err(e);
+                }
+            };
             let capability_mode = self.effective_capability(&opts);
             let max_steps = opts.max_steps.or_else(|| {
                 opts.agent_type
@@ -592,6 +678,7 @@ impl InProcessHost {
                     .and_then(|n| self.agent_registry.get(n).map(|d| d.max_steps))
             });
             let max_output_tokens = opts.max_output_tokens.and_then(|n| u32::try_from(n).ok());
+            // Child turn shares parent bus so seq stays monotonic on one stream.
             let turn_opts = TurnOptions {
                 max_steps,
                 capability_mode,
@@ -601,8 +688,10 @@ impl InProcessHost {
                 spawn_depth: Some(opts.depth),
                 max_output_tokens,
                 cwd: isolation_env.cwd.clone(),
+                events: opts.events.clone(),
                 ..TurnOptions::default()
             };
+            // Once the turn starts, the slot is consumed even on error.
             let outcome = match self
                 .runtime
                 .run(
@@ -618,6 +707,19 @@ impl InProcessHost {
                 Err(e) => {
                     let _ = self.isolation.cleanup(&isolation_env).await;
                     record_spawn(self.metrics.as_ref(), "error");
+                    if let Some(bus) = &opts.events {
+                        bus.emit(
+                            None,
+                            Some(opts.depth),
+                            TurnEventKind::SpawnFinished {
+                                child_agent_id: agent_id.to_string(),
+                                label: label.clone(),
+                                depth: opts.depth,
+                                success: false,
+                                cancelled: false,
+                            },
+                        );
+                    }
                     return Err(map_turn_error(e));
                 }
             };
@@ -627,6 +729,20 @@ impl InProcessHost {
             }
             let status = if outcome.cancelled { "cancelled" } else { "ok" };
             record_spawn(self.metrics.as_ref(), status);
+
+            if let Some(bus) = &opts.events {
+                bus.emit(
+                    None,
+                    Some(opts.depth),
+                    TurnEventKind::SpawnFinished {
+                        child_agent_id: agent_id.to_string(),
+                        label: label.clone(),
+                        depth: opts.depth,
+                        success: !outcome.cancelled,
+                        cancelled: outcome.cancelled,
+                    },
+                );
+            }
 
             let output = outcome
                 .output_json
@@ -1037,6 +1153,10 @@ mod tests {
             .await
             .expect_err("iso fail");
         assert_eq!(err.code(), ErrorCode::HostIsolation);
-        assert_eq!(host.agents_spent(), 1, "slot reserved before prepare");
+        assert_eq!(
+            host.agents_spent(),
+            0,
+            "pre-start isolation failure refunds budget"
+        );
     }
 }

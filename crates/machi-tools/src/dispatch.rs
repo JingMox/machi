@@ -9,12 +9,14 @@ use machi_types::{ToolCall, ToolCallId};
 use tokio::time::timeout;
 use tracing::{Instrument, info_span};
 
+use machi_protocol::TurnEventKind;
+
 use crate::approval::{ApprovalDecision, ApprovalGate, AutoApprove};
 use crate::context::ToolCallContext;
 use crate::error::{ToolError, codes};
 use crate::metadata::{ConcurrencyMode, Destructiveness, ToolMetadata};
 use crate::registry::{CapabilityMode, ToolRegistry};
-use crate::stream::drain_terminal;
+use crate::stream::{ToolProgress, drain_with_progress};
 use crate::tool::{DynTool, SharedTool, ToolResult};
 
 /// One tool call to execute.
@@ -246,11 +248,31 @@ impl ToolDispatch {
             return Err(codes::cancelled());
         }
         self.check_approval(tool, meta, &req.call.arguments).await?;
+        let call_id = req.call.id.as_str().to_owned();
+        let call_name = req.call.name.clone();
+        ctx.emit(TurnEventKind::ToolExecutionStart {
+            id: call_id.clone(),
+            name: call_name.clone(),
+        });
+        // Per-call child token: timeout cancels nested work (e.g. spawn_agent).
+        let call_cancel = ctx.cancel.child_token();
+        let mut call_ctx = ctx.clone();
+        call_ctx.cancel = call_cancel.clone();
         let fut = async {
-            let stream = tool.execute(ctx.clone(), req.call.arguments.clone()).await;
-            drain_terminal(stream).await
+            let stream = tool
+                .execute(call_ctx.clone(), req.call.arguments.clone())
+                .await;
+            let (progress, result) = drain_with_progress(stream).await;
+            for p in progress {
+                call_ctx.emit(TurnEventKind::ToolExecutionUpdate {
+                    id: call_id.clone(),
+                    name: call_name.clone(),
+                    message: progress_message(&p),
+                });
+            }
+            result
         };
-        // Always cap by turn deadline when present (tool timeout must not exceed SLO).
+        // Cap by min(tool timeout, turn deadline).
         let tool_limit = meta.timeout.filter(|d| !d.is_zero());
         let deadline_limit = ctx.deadline.map(|d| d.remaining()).filter(|d| !d.is_zero());
         let limit = match (tool_limit, deadline_limit) {
@@ -259,13 +281,26 @@ impl ToolDispatch {
             (None, Some(b)) => Some(b),
             (None, None) => None,
         };
-        match limit {
-            Some(limit) => match timeout(limit.max(Duration::from_millis(1)), fut).await {
-                Ok(r) => r,
-                Err(_) => Err(codes::timeout(format!("tool '{}' timed out", tool.name()))),
-            },
-            None => fut.await,
-        }
+        let result = if let Some(limit) = limit {
+            if let Ok(r) = timeout(limit.max(Duration::from_millis(1)), fut).await {
+                r
+            } else {
+                call_cancel.cancel();
+                Err(codes::timeout(format!("tool '{}' timed out", tool.name())))
+            }
+        } else {
+            fut.await
+        };
+        let is_error = match &result {
+            Ok(r) => r.is_error,
+            Err(_) => true,
+        };
+        ctx.emit(TurnEventKind::ToolExecutionEnd {
+            id: call_id,
+            name: call_name,
+            is_error,
+        });
+        result
     }
 
     async fn check_approval(
@@ -290,6 +325,14 @@ impl ToolDispatch {
 fn set_outcome(outcomes: &mut [Option<DispatchOutcome>], index: usize, out: DispatchOutcome) {
     if let Some(slot) = outcomes.get_mut(index) {
         *slot = Some(out);
+    }
+}
+
+fn progress_message(p: &ToolProgress) -> String {
+    match p {
+        ToolProgress::Text { text } => text.clone(),
+        ToolProgress::Partial { delta, .. } => delta.clone(),
+        ToolProgress::Custom { subkind, .. } => subkind.clone(),
     }
 }
 
@@ -489,7 +532,7 @@ mod tests {
     }
 
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use machi_types::ErrorCode;
     use tokio::sync::Barrier;
@@ -662,7 +705,9 @@ mod tests {
         assert_eq!(err.code(), ErrorCode::ToolApprovalDenied);
     }
 
-    struct SlowTool;
+    struct SlowTool {
+        cancelled: Arc<AtomicBool>,
+    }
 
     #[async_trait]
     impl DynTool for SlowTool {
@@ -683,17 +728,27 @@ mod tests {
         }
         async fn call(
             &self,
-            _ctx: ToolCallContext,
+            ctx: ToolCallContext,
             _arguments: serde_json::Value,
         ) -> Result<ToolResult, ToolError> {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            Ok(ToolResult::text("late"))
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(5)) => {
+                    Ok(ToolResult::text("late"))
+                }
+                () = ctx.cancel.cancelled() => {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    Err(codes::cancelled())
+                }
+            }
         }
     }
 
     #[tokio::test]
     async fn tool_timeout_matrix() {
-        let reg = ToolRegistry::from_tools(vec![Arc::new(SlowTool)]);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let reg = ToolRegistry::from_tools(vec![Arc::new(SlowTool {
+            cancelled: Arc::clone(&cancelled),
+        })]);
         let outs = ToolDispatch::default()
             .execute_batch(&reg, ToolCallContext::default(), vec![call("slow", "c1")])
             .await;
@@ -703,7 +758,20 @@ mod tests {
             .result
             .as_ref()
             .expect_err("timeout");
-        assert_eq!(err.code(), ErrorCode::ToolTimeout);
+        // Race: either ToolTimeout (outer) or tool observed cancel first.
+        assert!(
+            matches!(
+                err.code(),
+                ErrorCode::ToolTimeout | ErrorCode::ToolCancelled
+            ),
+            "{err:?}"
+        );
+        // Give the select branch a moment if timeout won the race first.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            cancelled.load(Ordering::SeqCst) || err.code() == ErrorCode::ToolTimeout,
+            "timeout must cancel the per-call token"
+        );
     }
 
     struct CancelAwareTool;

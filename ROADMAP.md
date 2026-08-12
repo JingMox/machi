@@ -3,8 +3,9 @@
 **Status:** living north star v3 — supersedes and replaces v2 entirely.
 **Product:** embeddable Rust **multi-agent runtime library** (`machi` workspace), not a TUI / CLI / server product.
 **References:** `3rdparty/grok-build`, `3rdparty/codex`, `3rdparty/pi`, `3rdparty/opencode` — extract **contracts and semantics**, never bulk-copy product code.
-**Baseline:** ~25.7k LOC kernel, **612 tests green** (`--workspace --all-features`, fully offline), `cargo deny` / `fmt` clean, zero `todo!`/`unimplemented!`, W1–W5 exit verified.
-**Updated:** 2026-08-11.
+**Baseline:** dual-mode kernel vertical slice (W1–W5); production-hardening ongoing.
+**Version:** workspace **`0.9.0` pre-stability** — **not** a 1.0 product. crates.io `1.0.0` was premature; **no freeze**. Breaking changes without compatibility layers (AGENTS.md).
+**Updated:** 2026-08-12.
 
 ---
 
@@ -62,7 +63,7 @@ Build a **complete, embeddable, offline-testable multi-agent runtime library** t
 | W3 turn/tools | ✅ 2026-08-09 | Confirmed: stationarity nudge@8/stop@16, preflight overflow, `ToolProgress::Partial` UTF-8 framing, lifecycle port, interjection |
 | W4 state/compaction | **✅ verified 2026-08-11** | `w4_ledger_and_jsonl_restart` green; compaction fuzz (`select_matrix.rs`) green; ledger per-prompt/per-model live. **Deviation (decision #7):** 4.2 shipped as `SummarizingCompaction` with a sync `summarize` callback port instead of an `llm-compaction` feature — cleaner for the firewall; no LLM dependency in `machi-compaction`. |
 | W5 agent/host | **✅ verified 2026-08-11** | `w5_builtin_types_spawnable`, `w5_fork_from_parent_handle_and_resume_store` green; discovery precedence tests in `machi-agent`; `SpawnAgentTool` allowlist live |
-| W6 quality closure | **⏳ open** | Test target exceeded (612 ≥ 500); stress + benches (`turn_spawn`, `journal`) exist; `cargo deny` configured. **Remaining:** metric/span snapshot wired as a dedicated CI job, rustdoc maturity audit, hollow-API sweep, freeze tag. Closed as W6F below. |
+| W6 quality / thickness | **partial** | Dense offline tests + stress + benches + deny exist. **Not** a stability freeze. Remaining product gaps are W7–W12 (events, sandbox, MCP, …). |
 
 ### 1.2 v3 production-readiness audit (2026-08-11)
 
@@ -176,24 +177,16 @@ kernel, memory *product* (port + one adapter only, post-W12).
 
 ---
 
-## 4. Phase plan W6F, W7–W12 (the only path to 2.0)
+## 4. Phase plan W7–W12 (pre-stability; no freeze ceremony)
 
 > **Rule:** do not open the next phase's new surface until the current phase exit
 > criteria pass. Deepening within a phase is always allowed. Every phase exit leaves
-> a working product. All changes remain breaking-without-compat per AGENTS.md.
+> a working product. **All changes remain breaking-without-compat per AGENTS.md.**
+> There is **no** v1.0 freeze gate. A real `1.0` is declared only when the six
+> charter planes are closed and documented as such — not scheduled as bookkeeping.
 
-### W6F — v1.0 freeze closure (bookkeeping, days not weeks)
-
-| # | Work | Notes |
-| --- | ------ | ------- |
-| 6F.1 | Record W4/W5 exit in this file + `CHANGELOG.md` (done above, decision #7) | honesty ledger |
-| 6F.2 | Metric/span catalogue snapshot as a dedicated CI job (not only a test attr) | golden files committed |
-| 6F.3 | Bench baselines committed for `machi-runtime/turn_spawn`, `machi-workflow/journal`; CI regression threshold ±20 % | `cargo bench` harness exists |
-| 6F.4 | Rustdoc maturity-tag audit: every public item tagged `core` / `optional` / `experimental`; delete hollow API instead of documenting it | grep-driven sweep |
-| 6F.5 | Tag **v1.0 freeze**; from here the 2.0 line owns breaking changes | anchor for embedders |
-
-**Exit criteria:** CI green including new snapshot/bench jobs; freeze tag pushed;
-CHANGELOG freeze entry recorded.
+Optional engineering hygiene (not a release gate): metric/span catalogue goldens,
+bench baselines, maturity-tag sweeps that **delete** hollow API.
 
 ### W7 — Embedding event surface (E-class, highest priority)
 
@@ -220,7 +213,7 @@ opencode's event bus — as a **library port, not a server**.
 **Exit criteria:** example host (`examples/live_events.rs`) renders a complete
 turn — deltas, tool progress, nested spawn tree — from events alone; ordering
 property tests (fuzz interleavings); Mode A/B spawn-event isomorphism test;
-`event_tx: None` bench delta < 2 % vs v1.0 baseline.
+`event_tx: None` bench delta < 2 % vs prior baseline.
 
 ### W8 — Enforced security boundary (S-class)
 
@@ -296,15 +289,15 @@ firewall intact (`machi-workflow ↛ machi-llm`).
 concurrent spawns under `WorktreeIsolation` stress; revert never leaves the
 work tree in a mixed state (stage/commit/clear matrix).
 
-### 2.0 freeze criteria
+### Real 1.0 readiness criteria (future — not a freeze workstream)
 
 - Every phase W7–W12 exit re-verified honest green in one CI run.
 - Test count is not a goal; **contract coverage** is: event ordering, security
   regression, MCP protocol, hook gates, provider conformance, session tree fuzz
   suites all present and meaningful.
-- Docs = code; maturity tags current; hollow API deleted.
+- Docs = code; hollow API deleted (not papered over with maturity tags alone).
 - `machi` facade compiles with `default`, `full`, and each feature standalone.
-- Freeze recorded here + `CHANGELOG.md`; 2.0 tag pushed.
+- Only then: bump to `1.0.0` with a honest CHANGELOG entry. **Until then: `0.x`.**
 
 ---
 
@@ -338,7 +331,7 @@ cargo bench -- --save-baseline phase-exit   # compare vs committed baseline, ±2
 ```rust
 /// Maturity: core
 /// Maturity: optional (feature = "…")
-/// Maturity: experimental — may break without major bump until freeze
+/// Maturity: experimental — may break without notice on 0.x
 ```
 
 ---
@@ -359,10 +352,10 @@ cargo bench -- --save-baseline phase-exit   # compare vs committed baseline, ±2
 | `worktree` | worktree isolation backend | W12 |
 | `full` | all of the above | rolling |
 
-Semver: **v1.0 freeze at W6F exit** anchors embedders; the 2.0 line owns all
-W7–W12 breaking changes, landing without compatibility layers per AGENTS.md.
-The 2.0 freeze is declared only when §4's freeze criteria are recorded here and
-in `CHANGELOG.md`.
+Semver: workspace is **`0.9.x` pre-stability**. Breaking changes land without
+compatibility layers (AGENTS.md). crates.io `1.0.0` was premature and is not a
+stability promise. A real `1.0` waits on §4 readiness criteria — **no freeze
+ceremony** in the meantime.
 
 ---
 
@@ -377,7 +370,9 @@ in `CHANGELOG.md`.
 | 5 | 2026-08-09 | Hooks ship later **on top of** `TurnLifecycleContributor` (W3.5); no separate hooks crate before W6 exit. |
 | 6 | 2026-08-09 | W1 exit green: journal v2, budget conservation, host-error sentinel, await_user, meta/Rhai limits. Next: W2. |
 | 7 | 2026-08-11 | W4/W5 exit verified green (612 tests). W4.2 deviation accepted: `SummarizingCompaction` ships a sync summarize-callback port instead of an `llm-compaction` feature — `machi-compaction` stays LLM-free. |
-| 8 | 2026-08-11 | ROADMAP v3 replaces v2. References expanded to codex / pi / opencode alongside grok-build; extraction rule unchanged (contracts, never code). Execution queue is W6F → W7 → … → W12. |
+| 8 | 2026-08-11 | ROADMAP v3 replaces v2. References expanded to codex / pi / opencode alongside grok-build; extraction rule unchanged (contracts, never code). Execution queue is W7 → … → W12. |
+| 13 | 2026-08-12 | **No freeze.** Premature crates.io/`1.0.0` does not grant stability. Workspace **0.9.0** pre-stability; breaking without BC. Long-term memory (`meme`) and micro-VM sandbox (`bux`) stay **out-of-tree** satellites behind `MemoryPort` / `IsolationBackend`. |
+| 14 | 2026-08-12 | Control plane fail-closed: tool timeout cancels per-call token; host budget refunds pre-start failures; completion gate exhausts to `RuntimeGate` (no silent Complete). |
 | 9 | 2026-08-11 | **Embedding event surface (W7) is the top priority**: invariant #6 (event completeness) adopted; `TurnEvent` lives in `machi-protocol`; no capability ships without event observability. |
 | 10 | 2026-08-11 | **Secure-by-default (W8)**: invariant #7 adopted; `resolve_jailed` symlink hole acknowledged and scheduled as W8.1; `ShellTool` trust mode becomes an explicit opt-out — breaking, no shim. |
 | 11 | 2026-08-11 | MCP ships as a leaf `ToolSource` adapter crate (`machi-mcp`) over the official rmcp SDK; OAuth browser flows and marketplace surfaces stay permanently outside the kernel (invariant #8). |

@@ -6,11 +6,13 @@
 #![forbid(unsafe_code)]
 
 pub mod content;
+pub mod event;
 pub mod observability;
 pub mod tokens;
 pub mod tool_id;
 
 pub use content::{ContentBlock, ImageBlock};
+pub use event::{TurnEvent, TurnEventKind};
 pub use observability::{
     SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
     SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names, span_catalogue_snapshot,

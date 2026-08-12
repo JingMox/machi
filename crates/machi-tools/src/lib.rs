@@ -17,7 +17,7 @@ pub mod tool;
 
 pub use approval::{AlwaysDeny, ApprovalDecision, ApprovalGate, AutoApprove, denied_error};
 pub use calc::CalcTool;
-pub use context::{EXTRA_SPAWN_DEPTH, ToolCallContext};
+pub use context::{EXTRA_SPAWN_DEPTH, EventBus, ToolCallContext};
 pub use dispatch::{ApprovalPolicy, DispatchOutcome, DispatchRequest, ToolDispatch};
 pub use error::ToolError;
 pub use metadata::{
