@@ -616,7 +616,7 @@ impl InProcessHost {
             if let Some(bus) = &opts.events {
                 bus.emit(
                     None,
-                    Some(opts.depth.saturating_sub(0)),
+                    Some(opts.depth),
                     TurnEventKind::SpawnStarted {
                         child_agent_id: agent_id.to_string(),
                         label: label.clone(),
@@ -624,11 +624,27 @@ impl InProcessHost {
                     },
                 );
             }
+            let emit_spawn_failed = |bus: &EventBus| {
+                bus.emit(
+                    None,
+                    Some(opts.depth),
+                    TurnEventKind::SpawnFinished {
+                        child_agent_id: agent_id.to_string(),
+                        label: label.clone(),
+                        depth: opts.depth,
+                        success: false,
+                        cancelled: false,
+                    },
+                );
+            };
 
             let isolation_env = match self.isolation.prepare(&opts).await {
                 Ok(env) => env,
                 Err(e) => {
                     self.release_slot();
+                    if let Some(bus) = &opts.events {
+                        emit_spawn_failed(bus);
+                    }
                     return Err(e);
                 }
             };
@@ -638,6 +654,9 @@ impl InProcessHost {
                 Err(e) => {
                     let _ = self.isolation.cleanup(&isolation_env).await;
                     self.release_slot();
+                    if let Some(bus) = &opts.events {
+                        emit_spawn_failed(bus);
+                    }
                     return Err(e);
                 }
             };
@@ -646,6 +665,9 @@ impl InProcessHost {
                 Err(e) => {
                     let _ = self.isolation.cleanup(&isolation_env).await;
                     self.release_slot();
+                    if let Some(bus) = &opts.events {
+                        emit_spawn_failed(bus);
+                    }
                     return Err(e);
                 }
             };
