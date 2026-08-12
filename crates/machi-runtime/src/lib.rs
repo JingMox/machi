@@ -57,5 +57,6 @@ pub use spawn_tool::SpawnAgentTool;
 pub use state::{ConversationState, VecConversationState, estimate_messages_tokens};
 pub use turn::{TurnInput, TurnOptions, TurnOutcome, TurnRuntime, estimate_conversation_tokens};
 pub use workflow_host::{
-    run_workflow_configured, run_workflow_on_host, run_workflow_on_host_with_metrics,
+    run_workflow_configured, run_workflow_configured_with_events, run_workflow_on_host,
+    run_workflow_on_host_with_metrics,
 };

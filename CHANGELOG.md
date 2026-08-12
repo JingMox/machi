@@ -19,7 +19,10 @@ requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
   - Turn loop emits started/step/tools/compaction/stationarity/finished/aborted
   - Stream path forwards `TextDelta` / `ReasoningDelta`
   - Nested spawn emits `SpawnStarted` / `SpawnFinished` on the parent bus
+  - Mode B: `run_workflow_configured_with_events` wires the same spawn events
   - Example: `cargo run -p machi --example live_events --features runtime`
+- **Jail realpath (W8.1):** `resolve_jailed` canonicalizes deepest existing ancestor;
+  in-jail symlink → outside host path is rejected (`EscapesJail`).
 
 ### Changed
 

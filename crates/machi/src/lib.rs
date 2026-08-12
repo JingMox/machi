@@ -93,8 +93,8 @@ pub use machi_runtime::{
 };
 #[cfg(all(feature = "runtime", feature = "workflow"))]
 pub use machi_runtime::{
-    WorkflowSideEffects, run_workflow_configured, run_workflow_on_host,
-    run_workflow_on_host_with_metrics,
+    WorkflowSideEffects, run_workflow_configured, run_workflow_configured_with_events,
+    run_workflow_on_host, run_workflow_on_host_with_metrics,
 };
 #[cfg(feature = "state")]
 pub use machi_state as state;
