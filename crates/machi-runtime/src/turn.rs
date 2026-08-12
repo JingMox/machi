@@ -631,6 +631,7 @@ fn apply_stop_gates(
             ctx.state.append(Message::user(reminder));
             Ok(FinalStep::Continue)
         }
+        GateDecision::Fail { reason } => Err(MachiError::new(ErrorCode::RuntimeGate, reason)),
     }
 }
 

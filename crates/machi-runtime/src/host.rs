@@ -494,6 +494,15 @@ impl InProcessHost {
         self.reserve_against_budget(budget)
     }
 
+    /// Refund a slot reserved before the child turn actually starts.
+    fn release_slot(&self) {
+        self.spent
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+                Some(s.saturating_sub(1))
+            })
+            .ok();
+    }
+
     fn reserve_against_budget(&self, budget: u64) -> Result<(), MachiError> {
         loop {
             let spent = self.spent.load(Ordering::Acquire);
@@ -576,15 +585,42 @@ impl InProcessHost {
             // Budget + concurrency apply to resume_from (no free spawn path).
             let _permit = self.try_acquire_concurrency()?;
             self.reserve_slot()?;
-            if let Some(resumed) = self.try_resume(&opts)? {
-                record_spawn(self.metrics.as_ref(), "ok");
-                return Ok(resumed);
+            match self.try_resume(&opts) {
+                Ok(Some(resumed)) => {
+                    record_spawn(self.metrics.as_ref(), "ok");
+                    return Ok(resumed);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    self.release_slot();
+                    return Err(e);
+                }
             }
 
-            let isolation_env = self.isolation.prepare(&opts).await?;
+            let isolation_env = match self.isolation.prepare(&opts).await {
+                Ok(env) => env,
+                Err(e) => {
+                    self.release_slot();
+                    return Err(e);
+                }
+            };
             let started = Instant::now();
-            let agent = self.build_child(&opts)?;
-            let mut state = self.child_state(&opts).await?;
+            let agent = match self.build_child(&opts) {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = self.isolation.cleanup(&isolation_env).await;
+                    self.release_slot();
+                    return Err(e);
+                }
+            };
+            let mut state = match self.child_state(&opts).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = self.isolation.cleanup(&isolation_env).await;
+                    self.release_slot();
+                    return Err(e);
+                }
+            };
             let capability_mode = self.effective_capability(&opts);
             let max_steps = opts.max_steps.or_else(|| {
                 opts.agent_type
@@ -603,6 +639,7 @@ impl InProcessHost {
                 cwd: isolation_env.cwd.clone(),
                 ..TurnOptions::default()
             };
+            // Once the turn starts, the slot is consumed even on error.
             let outcome = match self
                 .runtime
                 .run(
@@ -1037,6 +1074,10 @@ mod tests {
             .await
             .expect_err("iso fail");
         assert_eq!(err.code(), ErrorCode::HostIsolation);
-        assert_eq!(host.agents_spent(), 1, "slot reserved before prepare");
+        assert_eq!(
+            host.agents_spent(),
+            0,
+            "pre-start isolation failure refunds budget"
+        );
     }
 }
