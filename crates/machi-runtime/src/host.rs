@@ -17,9 +17,10 @@ use machi_agent::{
 };
 use machi_llm::LlmSampler;
 use machi_obs::{NoopMetrics, SharedMetrics, record_spawn};
+use machi_protocol::TurnEventKind;
 use machi_state::ChatStateHandle;
-use machi_tools::SharedTool;
 use machi_tools::registry::CapabilityMode;
+use machi_tools::{EventBus, SharedTool};
 use machi_types::{AgentId, ErrorCode, MachiError, Message, Usage};
 use machi_workflow::{WorkflowRunStatus, WorkflowRunStore};
 use serde_json::Value;
@@ -67,6 +68,8 @@ pub struct SpawnOpts {
     pub max_output_tokens: Option<u64>,
     /// Nesting depth of this spawn (`0` = first level under the host).
     pub depth: u32,
+    /// Parent turn event bus (spawn lifecycle events use this stream).
+    pub events: Option<EventBus>,
 }
 
 impl SpawnOpts {
@@ -87,6 +90,7 @@ impl SpawnOpts {
             resume_from: None,
             max_output_tokens: None,
             depth: 0,
+            events: None,
         }
     }
 
@@ -165,6 +169,13 @@ impl SpawnOpts {
     #[must_use]
     pub fn with_resume_from(mut self, id: impl Into<String>) -> Self {
         self.resume_from = Some(id.into());
+        self
+    }
+
+    /// Attach parent event bus for spawn lifecycle on the parent stream.
+    #[must_use]
+    pub fn with_events(mut self, events: EventBus) -> Self {
+        self.events = Some(events);
         self
     }
 }
@@ -559,6 +570,11 @@ impl InProcessHost {
         builder.build()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::excessive_nesting,
+        reason = "spawn_one owns budget/isolation/turn/events end-to-end"
+    )]
     async fn spawn_one(&self, opts: SpawnOpts) -> Result<AgentRunResult, MachiError> {
         let agent_id = AgentId::generate();
         let label = opts.label.clone();
@@ -597,6 +613,18 @@ impl InProcessHost {
                 }
             }
 
+            if let Some(bus) = &opts.events {
+                bus.emit(
+                    None,
+                    Some(opts.depth.saturating_sub(0)),
+                    TurnEventKind::SpawnStarted {
+                        child_agent_id: agent_id.to_string(),
+                        label: label.clone(),
+                        depth: opts.depth,
+                    },
+                );
+            }
+
             let isolation_env = match self.isolation.prepare(&opts).await {
                 Ok(env) => env,
                 Err(e) => {
@@ -628,6 +656,7 @@ impl InProcessHost {
                     .and_then(|n| self.agent_registry.get(n).map(|d| d.max_steps))
             });
             let max_output_tokens = opts.max_output_tokens.and_then(|n| u32::try_from(n).ok());
+            // Child turn shares parent bus so seq stays monotonic on one stream.
             let turn_opts = TurnOptions {
                 max_steps,
                 capability_mode,
@@ -637,6 +666,7 @@ impl InProcessHost {
                 spawn_depth: Some(opts.depth),
                 max_output_tokens,
                 cwd: isolation_env.cwd.clone(),
+                events: opts.events.clone(),
                 ..TurnOptions::default()
             };
             // Once the turn starts, the slot is consumed even on error.
@@ -655,6 +685,19 @@ impl InProcessHost {
                 Err(e) => {
                     let _ = self.isolation.cleanup(&isolation_env).await;
                     record_spawn(self.metrics.as_ref(), "error");
+                    if let Some(bus) = &opts.events {
+                        bus.emit(
+                            None,
+                            Some(opts.depth),
+                            TurnEventKind::SpawnFinished {
+                                child_agent_id: agent_id.to_string(),
+                                label: label.clone(),
+                                depth: opts.depth,
+                                success: false,
+                                cancelled: false,
+                            },
+                        );
+                    }
                     return Err(map_turn_error(e));
                 }
             };
@@ -664,6 +707,20 @@ impl InProcessHost {
             }
             let status = if outcome.cancelled { "cancelled" } else { "ok" };
             record_spawn(self.metrics.as_ref(), status);
+
+            if let Some(bus) = &opts.events {
+                bus.emit(
+                    None,
+                    Some(opts.depth),
+                    TurnEventKind::SpawnFinished {
+                        child_agent_id: agent_id.to_string(),
+                        label: label.clone(),
+                        depth: opts.depth,
+                        success: !outcome.cancelled,
+                        cancelled: outcome.cancelled,
+                    },
+                );
+            }
 
             let output = outcome
                 .output_json

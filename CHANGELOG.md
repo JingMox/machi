@@ -11,6 +11,16 @@ requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
 
 ## [Unreleased]
 
+### Added
+
+- **`TurnEvent` live observation surface (W7):**
+  - `machi-protocol::{TurnEvent, TurnEventKind}` (serde, `non_exhaustive`)
+  - `EventBus` / `EventSink`; `TurnOptions::with_event_tx` / `with_events`
+  - Turn loop emits started/step/tools/compaction/stationarity/finished/aborted
+  - Stream path forwards `TextDelta` / `ReasoningDelta`
+  - Nested spawn emits `SpawnStarted` / `SpawnFinished` on the parent bus
+  - Example: `cargo run -p machi --example live_events --features runtime`
+
 ### Changed
 
 - **Version:** workspace package version **`0.9.0`** (pre-stability). Drop

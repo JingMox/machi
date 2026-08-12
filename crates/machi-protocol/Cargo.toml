@@ -9,6 +9,7 @@ keywords = ["ai", "agent", "protocol"]
 categories = ["data-structures"]
 
 [dependencies]
+machi-types = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

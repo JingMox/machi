@@ -42,6 +42,10 @@ tempfile = "3"
 tokio-util = { workspace = true }
 
 [[example]]
+name = "live_events"
+required-features = ["runtime"]
+
+[[example]]
 name = "session_checkpoint"
 required-features = ["state"]
 

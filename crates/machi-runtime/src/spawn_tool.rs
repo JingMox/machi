@@ -181,6 +181,9 @@ impl DynTool for SpawnAgentTool {
             .with_capability(capability_mode)
             .with_cancel(child_cancel)
             .with_depth(depth);
+        if let Some(bus) = ctx.events.clone() {
+            opts = opts.with_events(bus);
+        }
         if let Some(label) = label {
             opts = opts.with_label(label);
         }

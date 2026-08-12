@@ -9,6 +9,7 @@
     reason = "dev-deps for integration tests appear unused on lib target"
 )]
 
+pub mod events;
 pub mod gates;
 pub mod host;
 pub mod isolation;
@@ -23,6 +24,7 @@ pub mod stationarity;
 pub mod turn;
 pub mod workflow_host;
 
+pub use events::EventSink;
 pub use gates::{CompletionToolGate, GateChain, GateDecision, StopGate, evaluate_stop_gates};
 pub use host::{
     AgentRunResult, DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, InProcessHost,
@@ -30,6 +32,8 @@ pub use host::{
 };
 pub use isolation::{InProcessIsolation, IsolationBackend, IsolationEnv, isolation_error};
 pub use lifecycle::{LifecycleFanout, NoopLifecycle, TurnAbortReason, TurnLifecycleContributor};
+pub use machi_protocol::{TurnEvent, TurnEventKind};
+pub use machi_tools::EventBus;
 pub use stationarity::{
     HARD_STOP_THRESHOLD, NUDGE_THRESHOLD, StationarityAction, StationarityTracker,
     fingerprint_batch, nudge_message,
