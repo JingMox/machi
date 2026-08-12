@@ -11,6 +11,12 @@ requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependencies:** bump workspace crates to current crates.io releases
+  (`jsonschema` 0.28→0.49, `sha2` 0.10→0.11, `rhai` 1.25, `tokio` 1.53,
+  `reqwest` 0.13.4, …); pin `tempfile`/`libc` via workspace deps.
+
 ### Added
 
 - **`machi-sandbox` (W8.2 port):** `SandboxPolicy` / `FsPolicy` / `NetPolicy`,
