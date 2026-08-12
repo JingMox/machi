@@ -213,8 +213,7 @@ mod tests {
         use std::io::Write;
         use std::process::Command as StdCommand;
 
-        let dir = tempfile::tempdir().expect("tmp");
-        let root = dir.path().canonicalize().expect("canon");
+        let root = scratch_dir("ws");
         std::fs::write(root.join("in.txt"), b"inside").expect("in");
         // Prefer HOME: /tmp trees are allowed for dyld/scratch in the profile.
         let outside = std::env::var_os("HOME")
@@ -251,6 +250,7 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -258,16 +258,14 @@ mod tests {
     fn seatbelt_blocks_network_when_denied() {
         use std::process::Command as StdCommand;
 
-        let dir = tempfile::tempdir().expect("tmp");
-        let root = dir.path().canonicalize().expect("canon");
+        let root = scratch_dir("net");
         let policy = SandboxPolicy::workspace(&root);
         assert_eq!(policy.net, NetPolicy::Denied);
         let profile = build_profile(&policy).expect("profile");
 
-        // /usr/bin/nc may be absent; use python3 which is on macOS developer images,
-        // or fall back to curl. Prefer a tiny pure-syscall probe via /usr/bin/curl.
         let curl = Path::new("/usr/bin/curl");
         if !curl.is_file() {
+            let _ = std::fs::remove_dir_all(&root);
             return;
         }
         let out = StdCommand::new(SANDBOX_EXEC)
@@ -282,5 +280,21 @@ mod tests {
             "network must be denied under default workspace policy, stderr={}",
             String::from_utf8_lossy(&out.stderr)
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Unique abs path under the process temp dir (no extra dev-deps).
+    #[cfg(target_os = "macos")]
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "machi_sb_{tag}_{}_{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir.canonicalize().expect("canon")
     }
 }
