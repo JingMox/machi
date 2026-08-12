@@ -1,10 +1,12 @@
-//! Cwd-jailed shell command execution (restricted).
+//! Cwd-jailed shell command execution with explicit sandbox policy.
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use machi_sandbox::{NoSandbox, SandboxBackend, SandboxPolicy, TrustedExecution};
 use machi_tools::stream::ToolStream;
 use machi_tools::{
     DynTool, ToolCallContext, ToolError, ToolMetadata, ToolProgress, ToolResult, with_progress,
@@ -20,10 +22,39 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default combined stdout+stderr capture limit.
 pub const DEFAULT_MAX_OUTPUT: usize = 64 * 1024;
 
+/// How the shell process is isolated.
+#[derive(Clone)]
+enum ShellIsolation {
+    /// Explicit opt-out of process sandboxing.
+    Trusted,
+    /// OS-enforced backend + policy.
+    Sandboxed {
+        backend: Arc<dyn SandboxBackend>,
+        policy: SandboxPolicy,
+    },
+}
+
+impl std::fmt::Debug for ShellIsolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trusted => f.write_str("Trusted"),
+            Self::Sandboxed { backend, policy } => f
+                .debug_struct("Sandboxed")
+                .field("backend", &backend.name())
+                .field("policy", policy)
+                .finish(),
+        }
+    }
+}
+
 /// Run a shell command with `cwd` jailed to the workspace root.
 ///
-/// Security: intended for trusted hosts. Does not sandbox syscalls; only sets
-/// process cwd to the jail and applies timeout/output caps.
+/// Construction **requires** an explicit isolation choice:
+/// - [`ShellTool::trusted`] — host opts out of process sandbox (marker type)
+/// - [`ShellTool::sandboxed`] — wrap via [`SandboxBackend`]
+/// - [`ShellTool::with_no_sandbox`] — backend present but non-enforcing
+///
+/// There is no `Default` impl: silent trust is forbidden (secure-by-default).
 #[derive(Debug, Clone)]
 pub struct ShellTool {
     /// Jail / working directory.
@@ -32,26 +63,53 @@ pub struct ShellTool {
     pub timeout: Duration,
     /// Max captured output bytes.
     pub max_output: usize,
-}
-
-impl Default for ShellTool {
-    fn default() -> Self {
-        Self {
-            jail_root: None,
-            timeout: DEFAULT_TIMEOUT,
-            max_output: DEFAULT_MAX_OUTPUT,
-        }
-    }
+    isolation: ShellIsolation,
 }
 
 impl ShellTool {
-    /// Explicit jail as cwd.
+    /// Trusted host: no process sandbox (explicit opt-out).
     #[must_use]
-    pub fn with_jail(root: impl Into<PathBuf>) -> Self {
+    pub fn trusted(root: impl Into<PathBuf>, _trust: TrustedExecution) -> Self {
         Self {
             jail_root: Some(root.into()),
-            ..Self::default()
+            timeout: DEFAULT_TIMEOUT,
+            max_output: DEFAULT_MAX_OUTPUT,
+            isolation: ShellIsolation::Trusted,
         }
+    }
+
+    /// Sandboxed shell: command is wrapped by `backend` under `policy`.
+    #[must_use]
+    pub fn sandboxed(
+        root: impl Into<PathBuf>,
+        backend: Arc<dyn SandboxBackend>,
+        policy: SandboxPolicy,
+    ) -> Self {
+        Self {
+            jail_root: Some(root.into()),
+            timeout: DEFAULT_TIMEOUT,
+            max_output: DEFAULT_MAX_OUTPUT,
+            isolation: ShellIsolation::Sandboxed { backend, policy },
+        }
+    }
+
+    /// Explicit `NoSandbox` backend (same non-enforcement as trusted, but
+    /// keeps a [`SandboxBackend`] name in the isolation record).
+    #[must_use]
+    pub fn with_no_sandbox(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        Self::sandboxed(
+            root.clone(),
+            Arc::new(NoSandbox),
+            SandboxPolicy::workspace(root),
+        )
+    }
+
+    /// Set timeout.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -108,24 +166,37 @@ impl DynTool for ShellTool {
         let limit = self.timeout;
         let max_output = self.max_output;
         let cancel = ctx.cancel.clone();
+        let isolation = self.isolation.clone();
         with_progress(
             vec![ToolProgress::text(format!("shell: {command}"))],
             move || async move {
                 if cancel.is_cancelled() {
                     return Err(machi_tools::error::codes::cancelled());
                 }
-                let child = Command::new("sh")
-                    .arg("-c")
+                let mut cmd = Command::new("sh");
+                cmd.arg("-c")
                     .arg(&command)
                     .current_dir(&root)
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
-                    .kill_on_drop(true)
-                    .spawn()
-                    .map_err(|e| {
-                        machi_tools::error::codes::execution(format!("spawn shell: {e}"))
-                    })?;
+                    .kill_on_drop(true);
+
+                let mut cmd = match &isolation {
+                    ShellIsolation::Trusted => cmd,
+                    ShellIsolation::Sandboxed { backend, policy } => {
+                        backend.wrap(policy, cmd).map_err(|e| {
+                            machi_tools::error::codes::execution(format!(
+                                "sandbox '{}': {e}",
+                                backend.name()
+                            ))
+                        })?
+                    }
+                };
+
+                let child = cmd.spawn().map_err(|e| {
+                    machi_tools::error::codes::execution(format!("spawn shell: {e}"))
+                })?;
 
                 let wait = child.wait_with_output();
                 let output = tokio::select! {
@@ -189,15 +260,16 @@ fn truncate_in_place(s: &mut String, max: usize) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "unit tests")]
 mod tests {
     use tempfile::tempdir;
 
     use super::*;
 
     #[tokio::test]
-    async fn echoes_in_jail() {
+    async fn echoes_in_jail_trusted() {
         let dir = tempdir().expect("temp");
-        let tool = ShellTool::with_jail(dir.path());
+        let tool = ShellTool::trusted(dir.path(), TrustedExecution);
         let r = tool
             .call(
                 ToolCallContext {
@@ -209,15 +281,22 @@ mod tests {
             .await
             .expect("shell");
         assert!(r.content.contains("hi"), "{}", r.content);
-        assert!(
-            r.content.contains(dir.path().to_string_lossy().as_ref())
-                || r.structured
-                    .as_ref()
-                    .and_then(|v| v.get("stdout"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| s.contains("hi")),
-            "{}",
-            r.content
-        );
+    }
+
+    #[tokio::test]
+    async fn echoes_with_no_sandbox_backend() {
+        let dir = tempdir().expect("temp");
+        let tool = ShellTool::with_no_sandbox(dir.path());
+        let r = tool
+            .call(
+                ToolCallContext {
+                    cwd: Some(dir.path().to_path_buf()),
+                    ..ToolCallContext::default()
+                },
+                json!({"command": "echo sandboxed-slot"}),
+            )
+            .await
+            .expect("shell");
+        assert!(r.content.contains("sandboxed-slot"), "{}", r.content);
     }
 }

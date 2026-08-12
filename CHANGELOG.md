@@ -13,6 +13,14 @@ requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
 
 ### Added
 
+- **`machi-sandbox` (W8.2 port):** `SandboxPolicy` / `FsPolicy` / `NetPolicy`,
+  `SandboxBackend`, `NoSandbox`, `TrustedExecution` marker.
+- **Shell secure-by-default (partial W8.5):** `ShellTool` has **no** `Default`;
+  construct via `trusted(TrustedExecution)`, `sandboxed(backend, policy)`, or
+  `with_no_sandbox`. `default_toolkit` uses explicit trusted shell.
+
+### Added (prior)
+
 - **`TurnEvent` live observation surface (W7):**
   - `machi-protocol::{TurnEvent, TurnEventKind}` (serde, `non_exhaustive`)
   - `EventBus` / `EventSink`; `TurnOptions::with_event_tx` / `with_events`

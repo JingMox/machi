@@ -915,6 +915,7 @@ dependencies = [
  "machi-obs",
  "machi-protocol",
  "machi-runtime",
+ "machi-sandbox",
  "machi-state",
  "machi-toolkit",
  "machi-tools",
@@ -1002,6 +1003,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "machi-sandbox"
+version = "0.9.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "machi-state"
 version = "0.9.0"
 dependencies = [
@@ -1019,6 +1030,7 @@ name = "machi-toolkit"
 version = "0.9.0"
 dependencies = [
  "async-trait",
+ "machi-sandbox",
  "machi-tools",
  "machi-types",
  "serde_json",
