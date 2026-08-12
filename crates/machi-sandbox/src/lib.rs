@@ -1,17 +1,22 @@
 //! Process-level sandbox policy and backends for tool command wrapping.
 //!
-//! Maturity: **core** (policy + port); OS backends are optional features later.
+//! Maturity: **core** (policy + port); OS backends are feature-gated.
 //!
-//! This is **not** a micro-VM. Hardware isolation lives out-of-tree (e.g. bux)
-//! behind [`machi_runtime::IsolationBackend`]. This crate wraps `tokio::process::Command`
-//! with host-kernel policies (Seatbelt / Landlock adapters to follow).
+//! This is **not** a micro-VM. Hardware isolation lives out-of-tree (e.g. bux).
+//! This crate wraps [`tokio::process::Command`] with host-kernel policies.
 
 #![forbid(unsafe_code)]
+
+#[cfg(all(feature = "seatbelt", target_os = "macos"))]
+mod seatbelt;
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+
+#[cfg(all(feature = "seatbelt", target_os = "macos"))]
+pub use seatbelt::{SANDBOX_EXEC, SeatbeltBackend, build_profile};
 
 /// Filesystem access granted to a sandboxed command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

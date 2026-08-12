@@ -220,8 +220,8 @@ property tests (fuzz interleavings); Mode A/B spawn-event isomorphism test;
 | # | Work | Design |
 | --- | ------ | -------- |
 | 8.1 | **Jail symlink fix:** `resolve_jailed` realpath deepest existing ancestor under jail | **done** (PR #60) |
-| 8.2 | New crate `machi-sandbox`: `SandboxPolicy` + `SandboxBackend::wrap`; `NoSandbox` + `TrustedExecution`; `ShellTool` requires explicit trusted/sandboxed constructors (no `Default`) | **port + shell wiring done**; Seatbelt/Landlock OS adapters still open |
-| 8.2b | OS adapters: `SeatbeltBackend` / `LandlockBackend` feature-gated | remaining |
+| 8.2 | New crate `machi-sandbox`: `SandboxPolicy` + `SandboxBackend::wrap`; `NoSandbox` + `TrustedExecution`; `ShellTool` requires explicit trusted/sandboxed constructors (no `Default`) | **done** (port + shell) |
+| 8.2b | OS adapters: `SeatbeltBackend` (macOS, feature `seatbelt`); `LandlockBackend` (Linux) | **Seatbelt shipping**; Landlock remaining |
 | 8.3 | `ExecPolicy` port in `machi-tools`: normalized command prefix rules → `Allow / Deny / Ask`; unknown commands route to the existing `ApprovalGate`; assessment order fixed: exec-policy → sandbox wrap → approval | codex `exec_policy.rs` + opencode wildcard ruleset contracts |
 | 8.4 | **Persistent exec sessions:** `ExecSessionTool` — create/reuse named sessions, write stdin, poll output with `yield_time_ms`, output caps with head/tail truncation metadata, idle GC, `InterruptBehavior` honored; PTY backend feature-gated | codex `unified_exec` contract; pi `truncate.ts` head/line/tail semantics |
 | 8.5 | Secure-by-default rollout (invariant #7): `ShellTool` / `ExecSessionTool` require either a `SandboxBackend` or an explicit `TrustedExecution` marker in their constructor; the "intended for trusted hosts" disclaimer is deleted because it is no longer true | breaking change, no compat shim |

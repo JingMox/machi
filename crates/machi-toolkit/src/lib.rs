@@ -4,7 +4,8 @@
 //!
 //! Shell requires an explicit isolation choice ([`ShellTool::trusted`] or
 //! [`ShellTool::sandboxed`]). [`default_toolkit`] uses **trusted** shell for
-//! demos — production hosts should swap in a real [`machi_sandbox::SandboxBackend`].
+//! demos — production hosts should pass a real [`machi_sandbox::SandboxBackend`]
+//! (e.g. feature `seatbelt` → `SeatbeltBackend` on macOS).
 
 #![forbid(unsafe_code)]
 

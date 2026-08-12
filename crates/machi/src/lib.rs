@@ -102,6 +102,8 @@ pub use machi_sandbox as sandbox;
 pub use machi_sandbox::{
     FsPolicy, NetPolicy, NoSandbox, SandboxBackend, SandboxError, SandboxPolicy, TrustedExecution,
 };
+#[cfg(all(feature = "seatbelt", target_os = "macos"))]
+pub use machi_sandbox::{SANDBOX_EXEC, SeatbeltBackend};
 #[cfg(feature = "state")]
 pub use machi_state as state;
 #[cfg(feature = "state")]

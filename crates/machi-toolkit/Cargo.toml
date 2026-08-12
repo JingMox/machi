@@ -8,6 +8,11 @@ description = "Reference filesystem and shell tools for the Machi kernel"
 keywords = ["ai", "agent", "tools", "filesystem"]
 categories = ["filesystem", "asynchronous"]
 
+[features]
+default = []
+# macOS Seatbelt process sandbox (passthrough compile on other OSes).
+seatbelt = ["machi-sandbox/seatbelt"]
+
 [dependencies]
 async-trait = { workspace = true }
 machi-sandbox = { workspace = true }

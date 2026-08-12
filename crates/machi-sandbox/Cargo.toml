@@ -8,6 +8,11 @@ description = "Process sandbox policy and backends for Machi tools"
 keywords = ["ai", "agent", "sandbox", "security"]
 categories = ["os", "asynchronous"]
 
+[features]
+default = []
+# macOS Seatbelt via /usr/bin/sandbox-exec (no-op compile on other OSes).
+seatbelt = []
+
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -15,6 +20,7 @@ tokio = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true
