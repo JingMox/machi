@@ -518,7 +518,7 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
                     ordered.push(None);
                     continue;
                 }
-                // Soft-null from a prior Quota journal replays as unit.
+                // Prior Quota journal entry replays as unit.
                 if value.is_null() {
                     ordered.push(Some(Dynamic::UNIT));
                     continue;
@@ -555,7 +555,7 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
                         ordered.push(None);
                     }
                     Err(HostError::AgentCallQuotaExceeded { .. }) => {
-                        // Catchable null — journal Null to keep dense seq (W1.10 + journal invariant).
+                        // Journal Null to keep dense sequence numbers.
                         live_to_journal.push((idx, seq, hash, serde_json::Value::Null));
                         quota_release = quota_release.saturating_add(1);
                         ordered.push(None);
@@ -591,7 +591,7 @@ fn spawn_agents_parallel(ctx: &Arc<Mutex<Ctx>>, items: rhai::Array) -> ScriptRes
         }
         if let Some(slot) = ordered.get_mut(idx) {
             if is_host_err {
-                // Catchable path surfaces after all journaled.
+                // Propagate catchable error after journaling.
             } else if is_quota_null {
                 *slot = Some(Dynamic::UNIT);
             } else {

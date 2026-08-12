@@ -1,6 +1,5 @@
-//! Identical tool-call stationarity protection (W3.1).
+//! Identical tool-call stationarity protection.
 //!
-//! Maturity: **core**
 //!
 //! Tracks consecutive identical `(tool_name, args_hash)` batches. At
 //! [`NUDGE_THRESHOLD`] injects a reminder; at [`HARD_STOP_THRESHOLD`] fails
@@ -120,9 +119,10 @@ pub fn nudge_message(reminder: String) -> Message {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "unit tests")]
 mod tests {
-    use super::*;
     use machi_types::ToolCallId;
     use serde_json::json;
+
+    use super::*;
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {

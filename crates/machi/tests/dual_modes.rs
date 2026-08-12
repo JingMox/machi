@@ -536,7 +536,7 @@ mod dual {
         assert_eq!(run.output.as_str(), Some("forked"));
     }
 
-    // ── W1 Mode B contracts (budget conservation, await_user) ───────────
+    // Mode B contracts (budget conservation, await_user)
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn b_await_user_pauses_then_resume_skips() {
@@ -665,7 +665,7 @@ mod dual {
         assert_eq!(Journal::load(path).expect("final").len(), 1);
     }
 
-    // ── W5 agent resolution / host ─────────────────────────────────────
+    // agent resolution / host
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn w5_builtin_types_spawnable() {
@@ -733,7 +733,7 @@ mod dual {
         assert_eq!(host.agents_spent(), 2, "fork + resume each charge budget");
     }
 
-    // ── W4 state / ledger ───────────────────────────────────────────────
+    // state / ledger
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn w4_ledger_and_jsonl_restart() {

@@ -2,8 +2,6 @@
 //!
 //! Strategies are pure transforms over message lists. Runtime hosts decide
 //! *when* to compact; this crate decides *how*.
-//!
-//! Maturity: **core**.
 
 #![forbid(unsafe_code)]
 

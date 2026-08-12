@@ -1,4 +1,4 @@
-//! Actor-backed conversation handle (W4.3 prompt index + ledger).
+//! Actor-backed conversation handle (prompt index + usage ledger).
 
 use machi_types::{MachiError, Message, Role, Usage};
 use tokio::sync::{mpsc, oneshot};

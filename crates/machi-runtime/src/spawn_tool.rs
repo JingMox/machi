@@ -53,7 +53,7 @@ impl SpawnAgentTool {
         self
     }
 
-    /// Restrict spawnable `agent_type` values (W5.3). Empty allowlist rejects all typed spawns.
+    /// Restrict spawnable `agent_type` values. Empty allowlist rejects all typed spawns.
     #[must_use]
     pub fn with_allowed_agent_types(
         mut self,

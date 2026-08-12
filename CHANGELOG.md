@@ -6,13 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Stability:** workspace crates are **`0.9.x` pre-stability**. The crates.io
 publish of `1.0.0` was premature and is **not** an API freeze. Breaking changes
-land without compatibility layers ([`AGENTS.md`](./AGENTS.md)). A real `1.0`
-requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
+land without compatibility layers ([`AGENTS.md`](./AGENTS.md)). A real `1.0` requires the product charter planes closed.
 
 ## [Unreleased]
 
 ### Changed
 
+- **Docs:** remove internal `ROADMAP.md` from the repository; slim README and
+  crate docs (drop phase tags, maturity banners, process narrative).
 - **Dependencies:** bump workspace crates to current crates.io releases
   (`jsonschema` 0.28→0.49, `sha2` 0.10→0.11, `rhai` 1.25, `tokio` 1.53,
   `reqwest` 0.13.4, …); pin `tempfile`/`libc` via workspace deps.
@@ -44,7 +45,7 @@ requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
 ### Changed
 
 - **Version:** workspace package version **`0.9.0`** (pre-stability). Drop
-  freeze / v1.0-stability narrative from ROADMAP.
+  freeze / v1.0-stability narrative.
 - **Control plane fail-closed:**
   - Tool dispatch: per-call cancel child; **timeout cancels** nested work.
   - Host: **refund** agent budget on pre-start failures (isolation/build/state/resume err).

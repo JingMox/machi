@@ -1,4 +1,4 @@
-//! Stress / hardening suite (Phase 3): cancel flood, parallel tools, journal 1k.
+//! Stress suite: cancel flood, parallel tools, large journals.
 #![allow(
     unused_crate_dependencies,
     reason = "integration binary links facade feature deps"
@@ -252,7 +252,7 @@ mod stress {
         assert_eq!(sampler.calls.load(Ordering::SeqCst), first);
     }
 
-    /// W6: 64 concurrent spawns at depth 0 with `max_spawn_depth` 8.
+    /// 64 concurrent spawns at depth 0 with `max_spawn_depth` 8.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_64_spawns_depth_cap_8() {
         let sampler = Arc::new(MockSampler::new());
@@ -302,7 +302,7 @@ mod stress {
         assert!(run.success);
     }
 
-    /// W6: journal load rejects files larger than `MAX_JOURNAL_BYTES` (64 MiB).
+    /// journal load rejects files larger than `MAX_JOURNAL_BYTES` (64 MiB).
     #[test]
     fn journal_load_rejects_over_byte_cap() {
         use std::fs::OpenOptions;
@@ -340,7 +340,7 @@ mod stress {
         assert!(ok, "expected oversize restore/io reject, got {err:?}");
     }
 
-    /// W6: torn-write fuzz — incomplete tails of varying lengths are repaired.
+    /// torn-write fuzz — incomplete tails of varying lengths are repaired.
     #[test]
     fn journal_torn_write_fuzz_tails() {
         use std::fs;

@@ -1,8 +1,7 @@
 //! Append-only host-call journal for resume (format v2).
 //!
-//! Maturity: **core**
 //!
-//! Format v2 (breaking, no migration):
+//! Format v2:
 //! - optional first line: `# machi-journal/2`
 //! - dense JSONL entries with canonical 16-byte request hashes
 //! - `MAX_JOURNAL_BYTES` enforced on load and append
@@ -108,8 +107,6 @@ pub enum JournalError {
 }
 
 /// In-memory journal with optional durable path.
-///
-/// Maturity: **core**
 #[derive(Debug, Default)]
 pub struct Journal {
     entries: Vec<JournalEntry>,

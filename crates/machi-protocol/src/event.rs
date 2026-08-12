@@ -1,6 +1,5 @@
 //! Live turn observation surface (`TurnEvent`).
 //!
-//! Maturity: **core** — the embedder-facing stream of runtime effects.
 //! Every effect that matters to a host should appear here (event completeness).
 
 use machi_types::{AgentId, RunId};

@@ -1,6 +1,4 @@
 //! Workflow metadata extraction from scripts.
-//!
-//! Maturity: **core**
 
 use serde::{Deserialize, Serialize};
 

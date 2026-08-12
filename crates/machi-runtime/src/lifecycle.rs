@@ -1,6 +1,4 @@
-//! Turn lifecycle contributor port (W3.5).
-//!
-//! Maturity: **core** (port). Hooks product crates implement this later.
+//! Turn lifecycle contributor port.
 
 use machi_types::{ErrorCode, MachiError, RunId};
 

@@ -1,11 +1,4 @@
 //! In-process workflow side effects: scratch, templates, optional git diff.
-//!
-//! # Maturity
-//!
-//! - **Core host surface:** scratch R/W, template render (default path).
-//! - **Optional / host-specific:** [`WorkflowSideEffects::git_diff_since`] —
-//!   only after [`WorkflowSideEffects::set_git_cwd`]. Not part of the minimal
-//!   vertical slice; products enable when they need VCS context.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

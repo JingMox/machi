@@ -1,4 +1,4 @@
-// W6: per-keep_tail compaction contract (must compact + invariant).
+// per-keep_tail compaction contract (must compact + invariant).
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::missing_assert_message, clippy::panic, reason = "matrix")]
 mod select_matrix {

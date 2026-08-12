@@ -1,4 +1,4 @@
-//! Builtin agent types (W5.2).
+//! Builtin agent types.
 
 use machi_tools::CapabilityMode;
 

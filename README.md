@@ -7,15 +7,6 @@
 
 **Embeddable multi-agent runtime kernel** for Rust (dual-mode: dynamic spawn + journaled Rhai workflow).
 
-## Status
-
-**`0.9.x` pre-stability.** Not a finished 1.0 product.
-
-- APIs **break without major bumps** until a real 1.0 is earned (see `ROADMAP.md`).
-- A crates.io `1.0.0` publish existed prematurely; **do not treat it as stable**.
-- No freeze ceremony. Quality gates are phase exits, not version theater.
-- Long-term memory and micro-VM sandbox live in **separate** projects (`meme`, `bux`); machi keeps thin ports only.
-
 ## License
 
 Licensed under either of:
