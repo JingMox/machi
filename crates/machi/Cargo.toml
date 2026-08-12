@@ -15,6 +15,8 @@ runtime = ["dep:machi-runtime", "dep:machi-agent", "dep:machi-llm", "dep:machi-t
 workflow = ["dep:machi-workflow"]
 toolkit = ["runtime", "dep:machi-toolkit", "sandbox"]
 sandbox = ["dep:machi-sandbox"]
+# macOS Seatbelt backend (process sandbox via sandbox-exec).
+seatbelt = ["sandbox", "machi-sandbox/seatbelt", "machi-toolkit?/seatbelt"]
 state = ["dep:machi-state"]
 compaction = ["dep:machi-compaction"]
 obs = ["dep:machi-obs"]

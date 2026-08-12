@@ -299,4 +299,61 @@ mod tests {
             .expect("shell");
         assert!(r.content.contains("sandboxed-slot"), "{}", r.content);
     }
+
+    #[tokio::test]
+    #[cfg(all(feature = "seatbelt", target_os = "macos"))]
+    async fn seatbelt_shell_allows_inside_blocks_outside() {
+        use std::sync::Arc;
+
+        use machi_sandbox::{SandboxPolicy, SeatbeltBackend};
+
+        let dir = tempdir().expect("temp");
+        let root = dir.path().canonicalize().expect("canon");
+        std::fs::write(root.join("in.txt"), b"inside-ok").expect("in");
+
+        let outside = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("HOME")
+            .join(format!("machi_shell_out_{}", std::process::id()));
+        std::fs::write(&outside, b"secret").expect("out");
+
+        let tool = ShellTool::sandboxed(
+            root.clone(),
+            Arc::new(SeatbeltBackend),
+            SandboxPolicy::workspace(root.clone()),
+        );
+
+        let inside = tool
+            .call(
+                ToolCallContext {
+                    cwd: Some(root.clone()),
+                    ..ToolCallContext::default()
+                },
+                json!({"command": format!("cat {}", root.join("in.txt").display())}),
+            )
+            .await
+            .expect("inside");
+        assert!(
+            !inside.is_error && inside.content.contains("inside-ok"),
+            "{}",
+            inside.content
+        );
+
+        let out = tool
+            .call(
+                ToolCallContext {
+                    cwd: Some(root),
+                    ..ToolCallContext::default()
+                },
+                json!({"command": format!("cat {}", outside.display())}),
+            )
+            .await
+            .expect("outside call");
+        assert!(
+            out.is_error,
+            "outside read must fail under seatbelt: {}",
+            out.content
+        );
+        let _ = std::fs::remove_file(&outside);
+    }
 }

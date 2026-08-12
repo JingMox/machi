@@ -15,6 +15,9 @@ requires W7–W12 charter planes closed — see [`ROADMAP.md`](./ROADMAP.md).
 
 - **`machi-sandbox` (W8.2 port):** `SandboxPolicy` / `FsPolicy` / `NetPolicy`,
   `SandboxBackend`, `NoSandbox`, `TrustedExecution` marker.
+- **`SeatbeltBackend` (W8.2b, feature `seatbelt`, macOS):** wraps commands with
+  `/usr/bin/sandbox-exec`; workspace read-write + network deny by default;
+  outside-jail reads fail.
 - **Shell secure-by-default (partial W8.5):** `ShellTool` has **no** `Default`;
   construct via `trusted(TrustedExecution)`, `sandboxed(backend, policy)`, or
   `with_no_sandbox`. `default_toolkit` uses explicit trusted shell.
