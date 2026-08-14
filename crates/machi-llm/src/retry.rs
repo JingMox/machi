@@ -1,6 +1,5 @@
 //! Retry classification and backoff for sampler decorators.
 //!
-//! Maturity: **core**
 //!
 //! Pure logic — no I/O. [`crate::retrying::RetryingSampler`] applies the policy.
 
@@ -98,7 +97,7 @@ pub struct RetryContext {
     pub http_status: Option<u16>,
 }
 
-/// Classify an HTTP status for the edge-client policy (W2.1).
+/// Classify an HTTP status for the edge-client policy.
 ///
 /// - `x-should-retry: false` → fatal  
 /// - 400/401/403/404/422 → fatal  

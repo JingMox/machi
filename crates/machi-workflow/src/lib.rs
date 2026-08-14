@@ -6,8 +6,6 @@
 //!
 //! **Dependency firewall:** this crate must not depend on `machi-llm` or
 //! HTTP provider stacks.
-//!
-//! Maturity: **core**.
 
 #![forbid(unsafe_code)]
 

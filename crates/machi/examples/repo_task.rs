@@ -1,4 +1,4 @@
-//! Vertical slice: agent + jailed toolkit writes a file (offline mock).
+//! Agent + jailed toolkit writes a file (offline mock).
 //!
 //! ```bash
 //! cargo run -p machi --example repo_task --features toolkit

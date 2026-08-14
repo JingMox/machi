@@ -1,7 +1,4 @@
 //! Tool sources: static lists and merge for multi-origin tool sets.
-//!
-//! MCP and other remote adapters implement [`ToolSource`] behind optional
-//! product crates — the kernel only defines the merge contract.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,8 +8,7 @@ use crate::tool::SharedTool;
 
 /// Provides tools that can be merged into a [`ToolRegistry`].
 ///
-/// Maturity: **core** (port). MCP and remote adapters live outside the kernel
-/// and implement this trait; merge is last-wins on tool name.
+/// Merge is last-wins on tool name.
 pub trait ToolSource: Send + Sync {
     /// Stable source id for logs (`static`, `mcp:server`, …).
     fn name(&self) -> &str;

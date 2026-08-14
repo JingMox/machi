@@ -9,17 +9,20 @@ use machi_agent::Agent;
 use machi_compaction::{CompactionStrategy, MaxMessages};
 use machi_llm::{LlmSampler, SampleEvent, SampleRequest, SampleResponse, ToolChoice};
 use machi_obs::{NoopMetrics, SharedMetrics, record_compaction, record_sample};
-use machi_protocol::{PreflightOverflow, check_context_overflow};
+use machi_protocol::{PreflightOverflow, TurnEvent, TurnEventKind, check_context_overflow};
 use machi_tools::registry::CapabilityMode;
 use machi_tools::{
-    ApprovalGate, ApprovalPolicy, AutoApprove, DispatchRequest, ToolCallContext, ToolDispatch,
+    ApprovalGate, ApprovalPolicy, AutoApprove, DispatchRequest, EventBus, ToolCallContext,
+    ToolDispatch,
 };
+// EventBus used by TurnOptions
 use machi_types::{AgentId, Deadline, ErrorCode, MachiError, Message, RunId, SessionId, Usage};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span};
 
+use crate::events::EventSink;
 use crate::gates::{GateChain, GateDecision};
 use crate::lifecycle::{LifecycleFanout, TurnAbortReason, TurnLifecycleContributor};
 use crate::schema::{
@@ -82,9 +85,9 @@ pub struct TurnOptions {
     pub max_output_tokens: Option<u32>,
     /// Prefer [`LlmSampler::sample_stream`] and aggregate into a full response.
     pub use_stream: bool,
-    /// Lifecycle contributors (W3.5).
+    /// Lifecycle contributors.
     pub contributors: Arc<dyn TurnLifecycleContributor>,
-    /// Optional mid-turn user interjections drained before each sample (W3.6).
+    /// Optional mid-turn user interjections drained before each sample.
     pub interject_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Message>>>>,
     /// Context window size for preflight overflow (tokens). `None` disables check.
     pub context_window_tokens: Option<u32>,
@@ -92,6 +95,10 @@ pub struct TurnOptions {
     pub context_overflow_ratio: f32,
     /// When true, overflow after compaction is a hard error; else continue.
     pub fail_on_context_overflow: bool,
+    /// Live event channel for a new turn (`EventSink` assigns `run_id` + seq).
+    pub event_tx: Option<mpsc::UnboundedSender<TurnEvent>>,
+    /// Existing bus (parent stream / nested turn sharing the same `seq`).
+    pub events: Option<EventBus>,
 }
 
 impl std::fmt::Debug for TurnOptions {
@@ -109,6 +116,8 @@ impl std::fmt::Debug for TurnOptions {
             .field("context_window_tokens", &self.context_window_tokens)
             .field("context_overflow_ratio", &self.context_overflow_ratio)
             .field("fail_on_context_overflow", &self.fail_on_context_overflow)
+            .field("has_event_tx", &self.event_tx.is_some())
+            .field("has_events", &self.events.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -137,11 +146,27 @@ impl Default for TurnOptions {
             context_window_tokens: None,
             context_overflow_ratio: 0.9,
             fail_on_context_overflow: true,
+            event_tx: None,
+            events: None,
         }
     }
 }
 
 impl TurnOptions {
+    /// Attach a live event channel (new bus for this turn's `run_id`).
+    #[must_use]
+    pub fn with_event_tx(mut self, tx: mpsc::UnboundedSender<TurnEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
+    }
+
+    /// Attach an existing event bus (shared `seq`, e.g. parent stream for nested turns).
+    #[must_use]
+    pub fn with_events(mut self, events: EventBus) -> Self {
+        self.events = Some(events);
+        self
+    }
+
     /// Cap conversation length via [`MaxMessages`] strategy.
     ///
     /// # Errors
@@ -229,14 +254,14 @@ impl TurnOptions {
         self
     }
 
-    /// Install lifecycle contributors (W3.5).
+    /// Install lifecycle contributors.
     #[must_use]
     pub fn with_contributors(mut self, contributors: Arc<dyn TurnLifecycleContributor>) -> Self {
         self.contributors = contributors;
         self
     }
 
-    /// Mid-turn interjection channel drained before each sample (W3.6).
+    /// Mid-turn interjection channel drained before each sample.
     #[must_use]
     pub fn with_interject_rx(
         mut self,
@@ -246,7 +271,7 @@ impl TurnOptions {
         self
     }
 
-    /// Enable preflight context overflow checks (W3.2).
+    /// Enable preflight context overflow checks.
     #[must_use]
     pub const fn with_context_window(mut self, tokens: u32) -> Self {
         self.context_window_tokens = Some(tokens);
@@ -359,6 +384,17 @@ impl TurnRuntime {
             .with_metrics(Arc::clone(&options.metrics));
 
         options.contributors.on_turn_start(&run_id);
+        let events = if let Some(bus) = options.events.clone() {
+            EventSink::from_bus(bus, options.agent_id.clone(), options.spawn_depth)
+        } else {
+            EventSink::from_tx(
+                options.event_tx.clone(),
+                run_id.clone(),
+                options.agent_id.clone(),
+                options.spawn_depth,
+            )
+        };
+        events.emit(TurnEventKind::TurnStarted);
         let mut stationarity = StationarityTracker::new();
 
         loop {
@@ -366,6 +402,10 @@ impl TurnRuntime {
                 options
                     .contributors
                     .on_turn_abort(&run_id, &TurnAbortReason::Cancelled);
+                events.emit(TurnEventKind::TurnFinished {
+                    steps: u32::try_from(steps).unwrap_or(u32::MAX),
+                    cancelled: true,
+                });
                 return Ok(empty_cancelled(run_id, usage, steps));
             }
             if deadline_expired(&options) {
@@ -373,6 +413,9 @@ impl TurnRuntime {
                 options
                     .contributors
                     .on_turn_abort(&run_id, &TurnAbortReason::from_error(&err));
+                events.emit(TurnEventKind::TurnAborted {
+                    reason: "deadline".into(),
+                });
                 return Err(err);
             }
             if steps >= max_steps {
@@ -383,24 +426,37 @@ impl TurnRuntime {
                 options
                     .contributors
                     .on_turn_abort(&run_id, &TurnAbortReason::from_error(&err));
+                events.emit(TurnEventKind::TurnAborted {
+                    reason: "max_steps".into(),
+                });
                 return Err(err);
             }
             steps = steps.saturating_add(1);
             let step_u32 = u32::try_from(steps).unwrap_or(u32::MAX);
+            events.emit(TurnEventKind::StepStarted { step: step_u32 });
 
-            drain_interjections(state, &options).await;
+            if drain_interjections(state, &options).await {
+                events.emit(TurnEventKind::InterjectionApplied);
+            }
 
             maybe_compact(
                 state,
                 options.compaction.as_deref(),
                 options.metrics.as_ref(),
                 false,
+                &events,
             )?;
 
-            if let Err(err) =
-                preflight_with_optional_force_compact(state, &options, options.metrics.as_ref())
-            {
+            if let Err(err) = preflight_with_optional_force_compact(
+                state,
+                &options,
+                options.metrics.as_ref(),
+                &events,
+            ) {
                 options.contributors.on_turn_error(&run_id, &err);
+                events.emit(TurnEventKind::TurnAborted {
+                    reason: err.code().as_str().into(),
+                });
                 return Err(err);
             }
 
@@ -419,13 +475,13 @@ impl TurnRuntime {
 
             let sample_span = info_span!("machi.sample", machi.step = step_u32);
             let sample_started = Instant::now();
-            let response = match sample_once(sampler, request, &options)
+            let response = match sample_once(sampler, request, &options, &events)
                 .instrument(sample_span)
                 .await
             {
                 Ok(r) => r,
                 Err(e) => {
-                    return finish_sample_error(e, &options, run_id, usage, steps);
+                    return finish_sample_error(e, &options, run_id, usage, steps, &events);
                 }
             };
             let sample_ms = sample_started.elapsed().as_secs_f64() * 1000.0;
@@ -455,30 +511,51 @@ impl TurnRuntime {
                 match handle_final_assistant(&mut final_ctx) {
                     Ok(FinalStep::Done(outcome)) => {
                         options.contributors.on_turn_done(&run_id, outcome.steps);
+                        events.emit(TurnEventKind::TurnFinished {
+                            steps: u32::try_from(outcome.steps).unwrap_or(u32::MAX),
+                            cancelled: outcome.cancelled,
+                        });
                         return Ok(outcome);
                     }
                     Ok(FinalStep::Continue) => continue,
                     Err(e) => {
                         options.contributors.on_turn_error(&run_id, &e);
+                        events.emit(TurnEventKind::TurnAborted {
+                            reason: e.code().as_str().into(),
+                        });
                         return Err(e);
                     }
                 }
+            }
+
+            for tc in &message.tool_calls {
+                events.emit(TurnEventKind::ToolCallPlanned {
+                    id: tc.id.as_str().to_owned(),
+                    name: tc.name.clone(),
+                });
             }
 
             match stationarity.observe_tool_batch(&message.tool_calls) {
                 StationarityAction::Ok => {}
                 StationarityAction::Nudge { reminder } => {
                     state.append(nudge_message(reminder));
+                    events.emit(TurnEventKind::StationarityNudge);
                 }
                 StationarityAction::HardStop { error } => {
                     options
                         .contributors
                         .on_turn_abort(&run_id, &TurnAbortReason::from_error(&error));
+                    events.emit(TurnEventKind::TurnAborted {
+                        reason: "stationarity".into(),
+                    });
                     return Err(error);
                 }
             }
 
-            dispatch_tools(agent, state, &options, &dispatch, message, step_u32).await;
+            dispatch_tools(
+                agent, state, &options, &dispatch, message, step_u32, &events,
+            )
+            .await;
         }
     }
 }
@@ -488,6 +565,7 @@ fn preflight_with_optional_force_compact(
     state: &mut dyn ConversationState,
     options: &TurnOptions,
     metrics: &dyn machi_obs::MetricsSink,
+    events: &EventSink,
 ) -> Result<(), MachiError> {
     let Some(window) = options.context_window_tokens else {
         return Ok(());
@@ -496,8 +574,7 @@ fn preflight_with_optional_force_compact(
     match check_context_overflow(estimated, window, options.context_overflow_ratio) {
         PreflightOverflow::Ok { .. } => Ok(()),
         PreflightOverflow::Overflow { .. } => {
-            // ROADMAP 3.2: overflow → compact or typed error.
-            maybe_compact(state, options.compaction.as_deref(), metrics, true)?;
+            maybe_compact(state, options.compaction.as_deref(), metrics, true, events)?;
             let estimated2 = estimate_messages_tokens(state.messages());
             match check_context_overflow(estimated2, window, options.context_overflow_ratio) {
                 PreflightOverflow::Ok { .. } => Ok(()),
@@ -524,6 +601,7 @@ fn finish_sample_error(
     run_id: RunId,
     usage: Usage,
     steps: usize,
+    events: &EventSink,
 ) -> Result<TurnOutcome, MachiError> {
     let mapped = map_sample_error(e, options, run_id.clone(), usage, steps);
     match &mapped {
@@ -531,28 +609,42 @@ fn finish_sample_error(
             options
                 .contributors
                 .on_turn_abort(&run_id, &TurnAbortReason::Cancelled);
+            events.emit(TurnEventKind::TurnFinished {
+                steps: u32::try_from(steps).unwrap_or(u32::MAX),
+                cancelled: true,
+            });
         }
         Err(err) if err.code() == ErrorCode::RuntimeDeadline => {
             options
                 .contributors
                 .on_turn_abort(&run_id, &TurnAbortReason::Deadline);
+            events.emit(TurnEventKind::TurnAborted {
+                reason: "deadline".into(),
+            });
         }
         Err(err) => {
             options.contributors.on_turn_error(&run_id, err);
+            events.emit(TurnEventKind::TurnAborted {
+                reason: err.code().as_str().into(),
+            });
         }
         Ok(_) => {}
     }
     mapped
 }
 
-async fn drain_interjections(state: &mut dyn ConversationState, options: &TurnOptions) {
+/// Drain pending interjections. Returns true when at least one was applied.
+async fn drain_interjections(state: &mut dyn ConversationState, options: &TurnOptions) -> bool {
     let Some(rx) = &options.interject_rx else {
-        return;
+        return false;
     };
     let mut guard = rx.lock().await;
+    let mut any = false;
     while let Ok(msg) = guard.try_recv() {
         state.append(msg);
+        any = true;
     }
+    any
 }
 
 /// Estimate tokens for a conversation (re-export of shared estimator).
@@ -631,6 +723,7 @@ fn apply_stop_gates(
             ctx.state.append(Message::user(reminder));
             Ok(FinalStep::Continue)
         }
+        GateDecision::Fail { reason } => Err(MachiError::new(ErrorCode::RuntimeGate, reason)),
     }
 }
 
@@ -641,6 +734,7 @@ async fn dispatch_tools(
     dispatch: &ToolDispatch,
     message: Message,
     step_u32: u32,
+    events: &EventSink,
 ) {
     state.append(message.clone());
     let mut extras = std::collections::HashMap::new();
@@ -654,6 +748,7 @@ async fn dispatch_tools(
         session_id: options.session_id.clone(),
         agent_id: options.agent_id.clone(),
         extras: Arc::new(extras),
+        events: events.bus_cloned(),
     };
     let requests: Vec<DispatchRequest> = message
         .tool_calls
@@ -679,6 +774,7 @@ fn maybe_compact(
     strategy: Option<&dyn CompactionStrategy>,
     metrics: &dyn machi_obs::MetricsSink,
     force: bool,
+    events: &EventSink,
 ) -> Result<(), MachiError> {
     let Some(strategy) = strategy else {
         return Ok(());
@@ -694,6 +790,9 @@ fn maybe_compact(
             if outcome.changed {
                 state.replace(outcome.messages);
                 record_compaction(metrics, name, "ok");
+                events.emit(TurnEventKind::CompactionApplied {
+                    strategy: name.to_owned(),
+                });
             }
             Ok(())
         }
@@ -712,10 +811,11 @@ async fn sample_once(
     sampler: &dyn LlmSampler,
     request: SampleRequest,
     options: &TurnOptions,
+    events: &EventSink,
 ) -> Result<SampleResponse, MachiError> {
     if options.use_stream {
         let stream = sampler.sample_stream(request).await?;
-        collect_sample_stream(stream).await
+        collect_sample_stream(stream, events).await
     } else {
         sampler.sample(request).await
     }
@@ -723,6 +823,7 @@ async fn sample_once(
 
 async fn collect_sample_stream(
     mut stream: machi_llm::SampleStream,
+    events: &EventSink,
 ) -> Result<SampleResponse, MachiError> {
     let mut message: Option<Message> = None;
     let mut usage = Usage::zero();
@@ -731,7 +832,13 @@ async fn collect_sample_stream(
 
     while let Some(ev) = stream.next().await {
         match ev {
-            SampleEvent::TextDelta { text } => text_buf.push_str(&text),
+            SampleEvent::TextDelta { text } => {
+                events.emit(TurnEventKind::TextDelta { text: text.clone() });
+                text_buf.push_str(&text);
+            }
+            SampleEvent::ReasoningDelta { text } => {
+                events.emit(TurnEventKind::ReasoningDelta { text });
+            }
             SampleEvent::ToolCalls { message: m } => message = Some(m),
             SampleEvent::Usage(u) => usage += u,
             SampleEvent::Completed {
@@ -924,6 +1031,60 @@ mod tests {
             .expect("turn");
         assert_eq!(out.output_text, "done");
         assert!(out.steps >= 2);
+    }
+
+    #[tokio::test]
+    async fn event_stream_emits_lifecycle_and_tools() {
+        use machi_protocol::TurnEventKind;
+
+        let sampler = Arc::new(MockSampler::new());
+        let id = ToolCallId::new("c1").expect("id");
+        sampler.push_tools(Message::assistant_tools(vec![ToolCall {
+            id,
+            name: "echo".into(),
+            arguments: json!({"text":"pong"}),
+        }]));
+        sampler.push_text("done");
+
+        let agent = AgentBuilder::named("a")
+            .model("mock")
+            .tools(vec![Arc::new(EchoTool)])
+            .build()
+            .expect("agent");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = VecConversationState::new();
+        TurnRuntime::new()
+            .run(
+                &agent,
+                sampler.as_ref(),
+                &mut state,
+                TurnInput::Text("ping".into()),
+                TurnOptions::default().with_event_tx(tx),
+            )
+            .await
+            .expect("turn");
+
+        let mut seqs = Vec::new();
+        let mut saw_start = false;
+        let mut saw_finish = false;
+        let mut saw_tool_plan = false;
+        let mut n = 0usize;
+        while let Ok(ev) = rx.try_recv() {
+            seqs.push(ev.seq);
+            n = n.saturating_add(1);
+            saw_start |= matches!(ev.kind, TurnEventKind::TurnStarted);
+            saw_finish |= matches!(ev.kind, TurnEventKind::TurnFinished { .. });
+            saw_tool_plan |= matches!(ev.kind, TurnEventKind::ToolCallPlanned { .. });
+        }
+        assert!(
+            seqs.windows(2).all(|w| match w {
+                [a, b] => a < b,
+                _ => false,
+            }),
+            "seq monotonic: {seqs:?}"
+        );
+        assert!(n >= 6, "expected lifecycle+tool events, got {n}");
+        assert!(saw_start && saw_finish && saw_tool_plan);
     }
 
     #[tokio::test]

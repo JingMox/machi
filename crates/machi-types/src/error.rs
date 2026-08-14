@@ -440,12 +440,6 @@ impl MachiError {
     pub fn llm_cancelled(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::LlmCancelled, message)
     }
-
-    /// Runtime cancelled (alias of [`Self::runtime_cancelled`]).
-    #[must_use]
-    pub fn cancelled(message: impl Into<String>) -> Self {
-        Self::runtime_cancelled(message)
-    }
 }
 
 impl fmt::Display for MachiError {

@@ -8,8 +8,14 @@ description = "Reference filesystem and shell tools for the Machi kernel"
 keywords = ["ai", "agent", "tools", "filesystem"]
 categories = ["filesystem", "asynchronous"]
 
+[features]
+default = []
+# macOS Seatbelt process sandbox (passthrough compile on other OSes).
+seatbelt = ["machi-sandbox/seatbelt"]
+
 [dependencies]
 async-trait = { workspace = true }
+machi-sandbox = { workspace = true }
 machi-tools = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -17,9 +23,8 @@ tokio = { workspace = true, features = ["fs", "io-util", "sync", "macros", "rt",
 
 [dev-dependencies]
 machi-types = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tokio-util = { workspace = true }
 
 [lints]
 workspace = true

@@ -163,12 +163,8 @@ mod tests {
         let tool = Arc::new(ReadFileTool::with_jail(dir.path()));
         let registry = ToolRegistry::from_tools(vec![tool]);
         let ctx = ToolCallContext {
-            cancel: tokio_util::sync::CancellationToken::new(),
-            deadline: None,
             cwd: Some(dir.path().to_path_buf()),
-            session_id: None,
-            agent_id: None,
-            extras: Arc::new(std::collections::HashMap::new()),
+            ..ToolCallContext::default()
         };
         let dispatch = ToolDispatch::default();
         let id = ToolCallId::new("c1").expect("id");
@@ -195,12 +191,8 @@ mod tests {
         let dir = tempdir().expect("temp");
         let tool = ReadFileTool::with_jail(dir.path());
         let ctx = ToolCallContext {
-            cancel: tokio_util::sync::CancellationToken::new(),
-            deadline: None,
             cwd: Some(dir.path().to_path_buf()),
-            session_id: None,
-            agent_id: None,
-            extras: Arc::new(std::collections::HashMap::new()),
+            ..ToolCallContext::default()
         };
         let err = tool
             .call(ctx, json!({"path": "../secret"}))

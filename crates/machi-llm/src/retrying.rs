@@ -1,6 +1,4 @@
 //! [`RetryingSampler`]: decorator that applies [`crate::retry::RetryPolicy`].
-//!
-//! Maturity: **core**
 
 #![allow(
     clippy::duration_suboptimal_units,
@@ -21,7 +19,7 @@ use crate::sample::{SampleRequest, SampleResponse};
 use crate::sampler::LlmSampler;
 use crate::stream::{SampleEvent, SampleStream};
 
-/// Default per-chunk idle timeout for streams (W2.2).
+/// Default per-chunk idle timeout for streams.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Wraps an [`LlmSampler`] with retry / backoff / empty-response handling.
@@ -241,11 +239,12 @@ fn idle_timeout_stream(
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "unit tests")]
 mod tests {
+    use machi_types::Message;
+
     use super::*;
     use crate::mock::MockSampler;
     use crate::retry::RetryPolicy;
     use crate::sample::ToolChoice;
-    use machi_types::Message;
 
     fn req(text: &str) -> SampleRequest {
         SampleRequest {

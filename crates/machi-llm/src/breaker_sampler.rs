@@ -1,6 +1,4 @@
 //! [`BreakerSampler`]: decorator that gates samples through a [`CircuitBreaker`].
-//!
-//! Maturity: **core**
 
 use std::pin::Pin;
 use std::sync::Arc;

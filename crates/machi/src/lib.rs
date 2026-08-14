@@ -1,6 +1,4 @@
-//! Machi — embeddable multi-agent runtime kernel (v1 clean break).
-//!
-//! # Layers (implemented)
+//! Machi — embeddable multi-agent runtime kernel.
 //!
 //! | Crate | Role |
 //! |-------|------|
@@ -16,13 +14,8 @@
 //! | `machi-runtime` | turn, session, host, workflow adapter |
 //! | `machi-workflow` | Rhai engine, journal, validate (no LLM) |
 //!
-//! # Vertical slice (canonical product path)
-//!
-//! Session / handle → `TurnRuntime` → tools(+toolkit) → approval / stop gates →
-//! metrics → `SessionHost` spawn and/or journaled workflow (+ scratch/template).
-//!
-//! **Not implemented yet (do not assume):** hooks crate, long-term memory crate,
-//! proc-macro derive, full OTEL SDK export, MCP.
+//! Session / handle → `TurnRuntime` → tools → gates → metrics →
+//! `SessionHost` spawn and/or journaled workflow.
 //!
 //! Optional host capabilities (e.g. `git_diff_since`) require explicit setup.
 
@@ -74,28 +67,36 @@ pub use machi_protocol as protocol;
 pub use machi_protocol::{
     ContentBlock, IMAGE_TOKEN_COST, ImageBlock, MESSAGE_FRAME_TOKENS, PreflightOverflow,
     SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
-    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId, check_context_overflow, estimate_image_tokens,
-    estimate_text_tokens, span_catalogue_snapshot,
+    SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, ToolId, TurnEvent, TurnEventKind, check_context_overflow,
+    estimate_image_tokens, estimate_text_tokens, span_catalogue_snapshot,
 };
 #[cfg(feature = "runtime")]
 pub use machi_runtime as runtime;
 #[cfg(feature = "runtime")]
 pub use machi_runtime::{
     AgentRunResult, CompactionOutcome, CompactionStrategy, CompletionToolGate, ConversationState,
-    DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, GateChain, GateDecision,
-    HARD_STOP_THRESHOLD, InProcessHost, InProcessIsolation, IsolationBackend, IsolationEnv,
-    LifecycleFanout, MaxMessages, MetricsSink, NUDGE_THRESHOLD, NoopLifecycle, NoopMetrics,
-    Session, SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts, StationarityAction,
-    StationarityTracker, StopGate, TokenThreshold, TurnAbortReason, TurnInput,
+    DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_SPAWN_DEPTH, EventBus, EventSink, GateChain,
+    GateDecision, HARD_STOP_THRESHOLD, InProcessHost, InProcessIsolation, IsolationBackend,
+    IsolationEnv, LifecycleFanout, MaxMessages, MetricsSink, NUDGE_THRESHOLD, NoopLifecycle,
+    NoopMetrics, Session, SessionHost, SharedMetrics, SpawnAgentTool, SpawnOpts,
+    StationarityAction, StationarityTracker, StopGate, TokenThreshold, TurnAbortReason, TurnInput,
     TurnLifecycleContributor, TurnOptions, TurnOutcome, TurnRuntime, VecConversationState,
     estimate_conversation_tokens, evaluate_stop_gates, fingerprint_batch, isolation_error,
     nudge_message,
 };
 #[cfg(all(feature = "runtime", feature = "workflow"))]
 pub use machi_runtime::{
-    WorkflowSideEffects, run_workflow_configured, run_workflow_on_host,
-    run_workflow_on_host_with_metrics,
+    WorkflowSideEffects, run_workflow_configured, run_workflow_configured_with_events,
+    run_workflow_on_host, run_workflow_on_host_with_metrics,
 };
+#[cfg(feature = "sandbox")]
+pub use machi_sandbox as sandbox;
+#[cfg(feature = "sandbox")]
+pub use machi_sandbox::{
+    FsPolicy, NetPolicy, NoSandbox, SandboxBackend, SandboxError, SandboxPolicy, TrustedExecution,
+};
+#[cfg(all(feature = "seatbelt", target_os = "macos"))]
+pub use machi_sandbox::{SANDBOX_EXEC, SeatbeltBackend};
 #[cfg(feature = "state")]
 pub use machi_state as state;
 #[cfg(feature = "state")]

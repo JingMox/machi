@@ -4,9 +4,8 @@
 //! - Re-export of **span / field** catalogue from [`machi_protocol`]
 //! - **Redaction** helpers so hosts never log secrets by accident
 //!
-//! Production hosts inject a real [`MetricsSink`] (Prometheus / OTEL adapters
-//! live behind optional features in later phases). The kernel only depends on
-//! the trait surface.
+//! Hosts inject a [`MetricsSink`]. This crate ships recording and Prometheus
+//! text helpers; other backends implement the trait.
 
 #![forbid(unsafe_code)]
 
@@ -15,8 +14,6 @@ pub mod prometheus;
 pub mod recording;
 pub mod redact;
 
-// Span contract lives in protocol so pure crates can name spans without pulling
-// metrics. Re-export for a single import path in hosts.
 pub use machi_protocol::observability::{
     SPAN_COMPACT, SPAN_SAMPLE, SPAN_SESSION, SPAN_SPAWN, SPAN_TOOL, SPAN_TOOL_BATCH, SPAN_TURN,
     SPAN_WORKFLOW, SPAN_WORKFLOW_HOST, field, required_span_names, span_catalogue_snapshot,

@@ -1,6 +1,4 @@
 //! Windowed circuit breaker for sampler endpoints.
-//!
-//! Maturity: **core** (port); wire via [`crate::breaker_sampler::BreakerSampler`].
 
 #![allow(
     clippy::duration_suboptimal_units,

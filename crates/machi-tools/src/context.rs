@@ -3,13 +3,68 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use machi_types::{AgentId, Deadline, SessionId};
+use machi_protocol::{TurnEvent, TurnEventKind};
+use machi_types::{AgentId, Deadline, RunId, SessionId};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Extra key: nesting depth of the agent that owns this tool call
 /// (`0` = first host-spawned level). Used by `spawn_agent` to fail-closed on depth.
 pub const EXTRA_SPAWN_DEPTH: &str = "machi.spawn_depth";
+
+/// Shared live-event bus for a turn (optional).
+///
+/// Clone is cheap (`Arc` seq + channel sender). When absent, tools stay silent.
+#[derive(Debug, Clone)]
+pub struct EventBus {
+    tx: mpsc::UnboundedSender<TurnEvent>,
+    run_id: RunId,
+    seq: Arc<AtomicU64>,
+}
+
+impl EventBus {
+    /// Create a bus bound to `run_id` with a fresh sequence counter.
+    #[must_use]
+    pub fn new(tx: mpsc::UnboundedSender<TurnEvent>, run_id: RunId) -> Self {
+        Self {
+            tx,
+            run_id,
+            seq: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Run id for this bus.
+    #[must_use]
+    pub fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+
+    /// Underlying sender (for nested spawn opts).
+    #[must_use]
+    pub fn sender(&self) -> mpsc::UnboundedSender<TurnEvent> {
+        self.tx.clone()
+    }
+
+    /// Shared sequence counter (keep one per turn across sinks).
+    #[must_use]
+    pub fn seq_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.seq)
+    }
+
+    /// Emit one event with monotonic `seq`.
+    pub fn emit(&self, agent_id: Option<AgentId>, depth: Option<u32>, kind: TurnEventKind) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let _ = self.tx.send(TurnEvent {
+            run_id: self.run_id.clone(),
+            seq,
+            agent_id,
+            depth,
+            kind,
+        });
+    }
+}
 
 /// Context passed into every tool invocation.
 #[derive(Debug, Clone)]
@@ -24,8 +79,10 @@ pub struct ToolCallContext {
     pub session_id: Option<SessionId>,
     /// Agent id when known.
     pub agent_id: Option<AgentId>,
-    /// Host-defined extensions (stringly map for v1).
+    /// Host-defined extensions (stringly map).
     pub extras: Arc<HashMap<String, String>>,
+    /// Optional live event bus for this turn.
+    pub events: Option<EventBus>,
 }
 
 impl Default for ToolCallContext {
@@ -37,6 +94,7 @@ impl Default for ToolCallContext {
             session_id: None,
             agent_id: None,
             extras: Arc::new(HashMap::new()),
+            events: None,
         }
     }
 }
@@ -63,6 +121,13 @@ impl ToolCallContext {
         self
     }
 
+    /// Builder: attach event bus.
+    #[must_use]
+    pub fn with_events(mut self, events: EventBus) -> Self {
+        self.events = Some(events);
+        self
+    }
+
     /// Read nesting depth of the current agent (`None` = top-level session turn).
     #[must_use]
     pub fn spawn_depth(&self) -> Option<u32> {
@@ -75,5 +140,12 @@ impl ToolCallContext {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled() || self.deadline.is_some_and(|d| d.is_expired())
+    }
+
+    /// Emit a turn event when a bus is attached.
+    pub fn emit(&self, kind: TurnEventKind) {
+        if let Some(bus) = &self.events {
+            bus.emit(self.agent_id.clone(), self.spawn_depth(), kind);
+        }
     }
 }

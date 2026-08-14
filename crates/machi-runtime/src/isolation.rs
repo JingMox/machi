@@ -1,7 +1,4 @@
-//! Isolation backend for nested agent runs (default: in-process, no sandbox).
-//!
-//! Worktree / OS sandbox backends are optional future adapters implementing
-//! the same trait — the kernel does not ship a worktree pool by default.
+//! Isolation backend for nested agent runs (default: in-process).
 
 use std::path::PathBuf;
 
@@ -19,10 +16,7 @@ pub struct IsolationEnv {
     pub label: Option<String>,
 }
 
-/// Prepares (and later tears down) an execution environment for a child agent.
-///
-/// Maturity: **core** (port). Default adapter is [`InProcessIsolation`];
-/// worktree / OS sandbox are product adapters, not kernel defaults.
+/// Prepares (and tears down) an execution environment for a child agent.
 #[async_trait]
 pub trait IsolationBackend: Send + Sync {
     /// Stable backend id (`in_process`, `worktree`, …).
@@ -44,9 +38,6 @@ pub trait IsolationBackend: Send + Sync {
 }
 
 /// Default isolation: same process and filesystem as the parent host.
-///
-/// Does not create worktrees or OS sandboxes. Requests for product-level
-/// isolation should inject a different backend (or fail at the host boundary).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct InProcessIsolation;
 
@@ -57,7 +48,6 @@ impl IsolationBackend for InProcessIsolation {
     }
 
     async fn prepare(&self, opts: &SpawnOpts) -> Result<IsolationEnv, MachiError> {
-        // Nested agents share the process; cwd remains host-controlled via TurnOptions.
         Ok(IsolationEnv {
             cwd: None,
             label: opts.label.clone(),

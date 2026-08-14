@@ -1,4 +1,4 @@
-// W6: independent per-status asserts (literal expected; not a SUT clone function).
+// independent per-status asserts (literal expected; not a SUT clone function).
 #[cfg(test)]
 #[allow(clippy::missing_assert_message, reason = "status in test name")]
 mod http_status_matrix {

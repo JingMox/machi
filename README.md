@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/machi.svg)](https://crates.io/crates/machi)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
-**Embeddable multi-agent runtime kernel** for Rust.
+**Embeddable multi-agent runtime kernel** for Rust (dual-mode: dynamic spawn + journaled Rhai workflow).
 
 ## License
 

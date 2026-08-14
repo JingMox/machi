@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use machi_obs::{NoopMetrics, SharedMetrics, record_workflow_agents, record_workflow_run};
+use machi_tools::EventBus;
 use machi_tools::registry::CapabilityMode;
 use machi_workflow::{
     AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest, WorkflowOutcome,
@@ -45,12 +46,13 @@ pub async fn run_workflow_on_host_with_metrics(
     agent_budget: Option<u64>,
     metrics: SharedMetrics,
 ) -> Result<WorkflowOutcome, HostError> {
-    run_workflow_configured(
+    run_workflow_configured_with_events(
         host,
         params,
         agent_budget,
         metrics,
         WorkflowSideEffects::shared(),
+        None,
     )
     .await
 }
@@ -62,10 +64,29 @@ pub async fn run_workflow_on_host_with_metrics(
 /// Same as [`run_workflow_on_host`].
 pub async fn run_workflow_configured(
     host: Arc<dyn SessionHost>,
+    params: WorkflowRunParams,
+    agent_budget: Option<u64>,
+    metrics: SharedMetrics,
+    effects: Arc<WorkflowSideEffects>,
+) -> Result<WorkflowOutcome, HostError> {
+    run_workflow_configured_with_events(host, params, agent_budget, metrics, effects, None).await
+}
+
+/// Like [`run_workflow_configured`] with an optional live [`EventBus`] for nested spawns.
+///
+/// Mode B `agent()` / `parallel()` emit the same `SpawnStarted` / `SpawnFinished`
+/// shapes as Mode A when `events` is set.
+///
+/// # Errors
+///
+/// Same as [`run_workflow_on_host`].
+pub async fn run_workflow_configured_with_events(
+    host: Arc<dyn SessionHost>,
     mut params: WorkflowRunParams,
     agent_budget: Option<u64>,
     metrics: SharedMetrics,
     effects: Arc<WorkflowSideEffects>,
+    events: Option<EventBus>,
 ) -> Result<WorkflowOutcome, HostError> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowHostRequest>();
     let spent = Arc::new(AtomicU64::new(0));
@@ -80,32 +101,17 @@ pub async fn run_workflow_configured(
     let effects_svc = Arc::clone(&effects);
 
     let service = tokio::spawn(async move {
-        let mut inflight = Vec::new();
-        while let Some(req) = rx.recv().await {
-            if cancel_h.is_cancelled() {
-                reply_cancelled(req);
-                continue;
-            }
-            // SpawnAgent runs concurrent so parallel() fan-out is real concurrency.
-            // Other requests are cheap and handled inline.
-            match req {
-                WorkflowHostRequest::SpawnAgent { opts, reply } => {
-                    let host = Arc::clone(&host_svc);
-                    let spent = Arc::clone(&spent_h);
-                    let reserved = Arc::clone(&reserved_h);
-                    let cancel = cancel_h.clone();
-                    inflight.push(tokio::spawn(async move {
-                        handle_spawn(host.as_ref(), opts, reply, &spent, &reserved, &cancel).await;
-                    }));
-                }
-                other => {
-                    dispatch_inline(other, budget, &spent_h, &reserved_h, effects_svc.as_ref());
-                }
-            }
-        }
-        for t in inflight {
-            let _ = t.await;
-        }
+        service_loop(
+            &mut rx,
+            host_svc,
+            budget,
+            spent_h,
+            reserved_h,
+            cancel_h,
+            effects_svc,
+            events,
+        )
+        .await;
     });
 
     params.host_tx = tx;
@@ -120,6 +126,56 @@ pub async fn run_workflow_configured(
     record_workflow_agents(metrics.as_ref(), spent_n);
     record_workflow_run(metrics.as_ref(), outcome_label(&outcome));
     Ok(outcome)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "service loop owns host channel state"
+)]
+async fn service_loop(
+    rx: &mut mpsc::UnboundedReceiver<WorkflowHostRequest>,
+    host_svc: Arc<dyn SessionHost>,
+    budget: Option<u64>,
+    spent_h: Arc<AtomicU64>,
+    reserved_h: Arc<AtomicU64>,
+    cancel_h: CancellationToken,
+    effects_svc: Arc<WorkflowSideEffects>,
+    events: Option<EventBus>,
+) {
+    let mut inflight = Vec::new();
+    while let Some(req) = rx.recv().await {
+        if cancel_h.is_cancelled() {
+            reply_cancelled(req);
+            continue;
+        }
+        match req {
+            WorkflowHostRequest::SpawnAgent { opts, reply } => {
+                let host = Arc::clone(&host_svc);
+                let spent = Arc::clone(&spent_h);
+                let reserved = Arc::clone(&reserved_h);
+                let cancel = cancel_h.clone();
+                let events = events.clone();
+                inflight.push(tokio::spawn(async move {
+                    handle_spawn(
+                        host.as_ref(),
+                        opts,
+                        reply,
+                        &spent,
+                        &reserved,
+                        &cancel,
+                        events.as_ref(),
+                    )
+                    .await;
+                }));
+            }
+            other => {
+                dispatch_inline(other, budget, &spent_h, &reserved_h, effects_svc.as_ref());
+            }
+        }
+    }
+    for t in inflight {
+        let _ = t.await;
+    }
 }
 
 fn outcome_label(outcome: &WorkflowOutcome) -> &'static str {
@@ -140,6 +196,7 @@ async fn handle_spawn(
     spent: &AtomicU64,
     reserved: &AtomicU64,
     cancel: &CancellationToken,
+    events: Option<&EventBus>,
 ) {
     let span = info_span!(
         "machi.workflow.host",
@@ -150,7 +207,7 @@ async fn handle_spawn(
         if cancel.is_cancelled() {
             return Err(HostError::Cancelled);
         }
-        let spawn = to_spawn_opts(opts, cancel.child_token())?;
+        let spawn = to_spawn_opts(opts, cancel.child_token(), events)?;
         match host.spawn_agent(spawn).await {
             Ok(run) => {
                 spent.fetch_add(1, Ordering::Relaxed);
@@ -294,7 +351,11 @@ fn map_host_spawn_error(e: machi_types::MachiError) -> HostError {
     }
 }
 
-fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> Result<SpawnOpts, HostError> {
+fn to_spawn_opts(
+    opts: AgentOpts,
+    cancel: CancellationToken,
+    events: Option<&EventBus>,
+) -> Result<SpawnOpts, HostError> {
     let mut spawn = SpawnOpts::new(opts.prompt).with_cancel(cancel);
     if let Some(label) = opts.label {
         spawn = spawn.with_label(label);
@@ -319,6 +380,9 @@ fn to_spawn_opts(opts: AgentOpts, cancel: CancellationToken) -> Result<SpawnOpts
     }
     if let Some(id) = opts.resume_from {
         spawn = spawn.with_resume_from(id);
+    }
+    if let Some(bus) = events {
+        spawn = spawn.with_events(bus.clone());
     }
     Ok(spawn)
 }
@@ -365,6 +429,61 @@ mod tests {
 
     use super::*;
     use crate::host::InProcessHost;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workflow_spawn_emits_events_on_bus() {
+        use machi_protocol::TurnEventKind;
+        use machi_tools::EventBus;
+        use machi_types::RunId;
+
+        let sampler = Arc::new(MockSampler::new());
+        sampler.push_text("ok");
+        let host: Arc<dyn SessionHost> = Arc::new(InProcessHost::new(sampler, vec![]));
+        let script = r#"
+            let meta = #{ name: "ev", description: "test" };
+            let r = agent("task", #{ label: "child" });
+            complete(#{ out: r });
+        "#;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let bus = EventBus::new(tx, RunId::generate());
+        let (host_tx, _host_rx) = mpsc::unbounded_channel();
+        let outcome = run_workflow_configured_with_events(
+            host,
+            WorkflowRunParams {
+                script: script.into(),
+                args: serde_json::json!({}),
+                journal: Journal::new(None),
+                host_tx,
+                cancel: CancellationToken::new(),
+                max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            },
+            Some(4),
+            Arc::new(NoopMetrics),
+            WorkflowSideEffects::shared(),
+            Some(bus),
+        )
+        .await
+        .expect("workflow");
+        assert!(
+            matches!(outcome, WorkflowOutcome::Completed { .. }),
+            "expected completed, got {outcome:?}"
+        );
+
+        let mut saw_start = false;
+        let mut saw_finish = false;
+        let mut finish_ok = true;
+        while let Ok(ev) = rx.try_recv() {
+            saw_start |= matches!(ev.kind, TurnEventKind::SpawnStarted { .. });
+            if let TurnEventKind::SpawnFinished { success, .. } = ev.kind {
+                saw_finish = true;
+                finish_ok &= success;
+            }
+        }
+        assert!(
+            saw_start && saw_finish && finish_ok,
+            "mode B must emit spawn lifecycle"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn workflow_parallel_on_session_host() {

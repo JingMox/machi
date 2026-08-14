@@ -12,7 +12,7 @@ pub trait ConversationState: Send {
     fn append(&mut self, message: Message);
     /// Replace the entire message list (compaction / restore).
     fn replace(&mut self, messages: Vec<Message>);
-    /// Token estimate for compaction triggers (aligned with preflight, W3.2).
+    /// Token estimate for compaction triggers (aligned with preflight).
     ///
     /// Includes framing, multimodal parts, and tool-call argument JSON.
     fn token_estimate(&self) -> u64 {
