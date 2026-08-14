@@ -7,7 +7,4 @@ on:
 
 jobs:
   stale:
-    permissions:
-      issues: write
-      pull-requests: write
     uses: qntx/workflows/.github/workflows/repo-stale.yml@main
